@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NOVA Hesap Silme Talebi</title>
+</head>
+<body style="font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6;">
+  <h1>NOVA Hesap Silme Talebi</h1>
+
+  <p>
+    NOVA uygulamasında oluşturduğunuz hesabın ve ilişkili verilerinizin silinmesini talep etmek için bizimle iletişime geçebilirsiniz.
+  </p>
+
+  <h2>Hesap silme talebi nasıl gönderilir?</h2>
+  <p>
+    Aşağıdaki e-posta adresine, uygulamada kayıtlı olduğunuz e-posta adresiyle mesaj gönderin.
+  </p>
+
+  <p>
+    <strong>E-posta:</strong> volkanilgin762534@gmail.com<br>
+    <strong>Konu:</strong> NOVA Hesap Silme Talebi
+  </p>
+
+  <h2>Silinebilecek veriler</h2>
+  <ul>
+    <li>Hesap bilgileri</li>
+    <li>Profil bilgileri</li>
+    <li>Gönderiler</li>
+    <li>Mesajlar</li>
+    <li>Takip ve etkileşim verileri</li>
+  </ul>
+
+  <h2>Saklanabilecek veriler</h2>
+  <p>
+    Yasal yükümlülükler, güvenlik veya kötüye kullanımın önlenmesi amacıyla bazı kayıtlar sınırlı süreyle saklanabilir.
+  </p>
+
+  <h2>İşlem süresi</h2>
+  <p>
+    Hesap silme talepleri en geç 30 gün içinde işleme alınır.
+  </p>
+
+  <hr>
+
+  <p>
+    <strong>NOVA</strong><br>
+    Geliştirici: Kaan Ayaz
+  </p>
+</body>
+</html>

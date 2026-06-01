@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -14,14 +16,17 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
+
 class CameraPage extends StatefulWidget {
   const CameraPage({super.key});
+
+  static List<CameraDescription>? cachedCameras;
 
   @override
   State<CameraPage> createState() => _CameraPageState();
 }
 
-class _CameraPageState extends State<CameraPage> {
+class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   CameraController? controller;
   List<CameraDescription> cameras = [];
 
@@ -29,6 +34,7 @@ class _CameraPageState extends State<CameraPage> {
   bool switchingCamera = false;
   bool takingPhoto = false;
   bool flashOn = false;
+  bool cameraError = false;
 
   int cameraIndex = 0;
 
@@ -37,142 +43,210 @@ class _CameraPageState extends State<CameraPage> {
   double currentZoom = 1.0;
   double baseZoom = 1.0;
 
+  DateTime _lastZoomChange = DateTime.fromMillisecondsSinceEpoch(0);
+  final ValueNotifier<double> zoomNotifier = ValueNotifier<double>(1.0);
+
+  bool get _hasReadyController =>
+      controller != null && controller!.value.isInitialized;
+
   bool get isFront =>
       cameras.isNotEmpty &&
+          cameraIndex >= 0 &&
+          cameraIndex < cameras.length &&
           cameras[cameraIndex].lensDirection == CameraLensDirection.front;
 
   bool get isBack =>
       cameras.isNotEmpty &&
+          cameraIndex >= 0 &&
+          cameraIndex < cameras.length &&
           cameras[cameraIndex].lensDirection == CameraLensDirection.back;
 
   @override
   void initState() {
     super.initState();
-    initCamera();
+    WidgetsBinding.instance.addObserver(this);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) initCamera();
+    });
   }
 
-  Future<void> setupZoom(CameraController newController) async {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final CameraController? activeController = controller;
+
+    if (activeController == null || !activeController.value.isInitialized) {
+      return;
+    }
+
+    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+      activeController.dispose();
+      controller = null;
+      return;
+    }
+
+    if (state == AppLifecycleState.resumed) {
+      if (mounted) initCamera(showFullLoading: false);
+    }
+  }
+
+  Future<List<CameraDescription>> _getCamerasFast() async {
+    final cached = CameraPage.cachedCameras;
+    if (cached != null && cached.isNotEmpty) return cached;
+
+    final result = await availableCameras();
+    CameraPage.cachedCameras = result;
+    return result;
+  }
+
+  Future<void> _setupZoom(CameraController newController) async {
     try {
       minZoom = await newController.getMinZoomLevel();
       maxZoom = await newController.getMaxZoomLevel();
+
       currentZoom = minZoom;
       baseZoom = minZoom;
+      zoomNotifier.value = currentZoom;
+
       await newController.setZoomLevel(currentZoom);
     } catch (e) {
       debugPrint('Zoom ayarı hatası: $e');
     }
   }
 
-  Future<void> initCamera() async {
+  Future<CameraController> _createController(CameraDescription description) async {
+    final CameraController newController = CameraController(
+      description,
+      ResolutionPreset.medium,
+      enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.jpeg,
+    );
+
+    await newController.initialize();
+    await newController.lockCaptureOrientation(DeviceOrientation.portraitUp);
+    await _setupZoom(newController);
+
+    if (description.lensDirection == CameraLensDirection.back) {
+      await newController.setFlashMode(FlashMode.off);
+    }
+
+    return newController;
+  }
+
+  Future<void> initCamera({bool showFullLoading = true}) async {
+    if (showFullLoading && mounted) {
+      setState(() {
+        loading = true;
+        cameraError = false;
+      });
+    }
+
     try {
-      cameras = await availableCameras();
+      cameras = await _getCamerasFast();
 
       if (cameras.isEmpty) {
-        if (mounted) setState(() => loading = false);
+        if (!mounted) return;
+        setState(() {
+          loading = false;
+          cameraError = true;
+        });
         return;
       }
 
-      final backIndex = cameras.indexWhere(
+      final int backIndex = cameras.indexWhere(
             (c) => c.lensDirection == CameraLensDirection.back,
       );
 
       cameraIndex = backIndex == -1 ? 0 : backIndex;
 
-      final newController = CameraController(
-        cameras[cameraIndex],
-        ResolutionPreset.high,
-        enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.jpeg,
-      );
+      final CameraController newController =
+      await _createController(cameras[cameraIndex]);
 
-      await newController.initialize();
-      await newController.lockCaptureOrientation(DeviceOrientation.portraitUp);
-      await setupZoom(newController);
-
-      if (cameras[cameraIndex].lensDirection == CameraLensDirection.back) {
-        await newController.setFlashMode(FlashMode.off);
+      if (!mounted) {
+        await newController.dispose();
+        return;
       }
 
-      if (!mounted) return;
+      final oldController = controller;
+
+      if (!mounted) {
+        await newController.dispose();
+        return;
+      }
 
       setState(() {
         controller = newController;
         flashOn = false;
         loading = false;
+        switchingCamera = false;
+        cameraError = false;
       });
+
+      await oldController?.dispose();
     } catch (e) {
       debugPrint('Kamera açılış hatası: $e');
-      if (mounted) setState(() => loading = false);
+      if (!mounted) return;
+      setState(() {
+        loading = false;
+        switchingCamera = false;
+        cameraError = true;
+      });
     }
   }
 
   Future<void> switchCamera() async {
     if (cameras.length < 2 || takingPhoto || switchingCamera) return;
 
-    final oldController = controller;
-    final nextIndex = (cameraIndex + 1) % cameras.length;
+    final int nextIndex = (cameraIndex + 1) % cameras.length;
+    final CameraController? oldController = controller;
 
     setState(() {
       switchingCamera = true;
       flashOn = false;
-      controller = null;
     });
 
     try {
       try {
         if (oldController != null &&
             oldController.value.isInitialized &&
-            cameras[cameraIndex].lensDirection == CameraLensDirection.back) {
+            isBack) {
           await oldController.setFlashMode(FlashMode.off);
         }
       } catch (_) {}
 
       await oldController?.dispose();
-      await Future.delayed(const Duration(milliseconds: 220));
 
-      final newController = CameraController(
-        cameras[nextIndex],
-        ResolutionPreset.high,
-        enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.jpeg,
-      );
+      final CameraController newController =
+      await _createController(cameras[nextIndex]);
 
-      await newController.initialize();
-      await newController.lockCaptureOrientation(DeviceOrientation.portraitUp);
-      await setupZoom(newController);
-
-      if (cameras[nextIndex].lensDirection == CameraLensDirection.back) {
-        await newController.setFlashMode(FlashMode.off);
+      if (!mounted) {
+        await newController.dispose();
+        return;
       }
-
-      if (!mounted) return;
 
       setState(() {
         cameraIndex = nextIndex;
         controller = newController;
         switchingCamera = false;
+        flashOn = false;
       });
     } catch (e) {
       debugPrint('Kamera değiştirme hatası: $e');
-
       if (!mounted) return;
-
       setState(() {
         switchingCamera = false;
         flashOn = false;
         controller = null;
       });
-
-      await initCamera();
+      await initCamera(showFullLoading: false);
     }
   }
 
   Future<void> toggleFlash() async {
-    if (controller == null || !controller!.value.isInitialized) return;
-    if (!isBack) return;
+    if (!_hasReadyController || !isBack || switchingCamera) return;
 
     try {
-      final nextFlash = !flashOn;
+      final bool nextFlash = !flashOn;
 
       await controller!.setFlashMode(
         nextFlash ? FlashMode.torch : FlashMode.off,
@@ -197,14 +271,14 @@ class _CameraPageState extends State<CameraPage> {
       if (decoded == null) return file;
 
       final fixed = img.flipHorizontal(decoded);
-      final fixedBytes = img.encodeJpg(fixed, quality: 95);
+      final fixedBytes = img.encodeJpg(fixed, quality: 94);
       final directory = await getTemporaryDirectory();
 
       final fixedFile = File(
         '${directory.path}/nova_front_fixed_${DateTime.now().millisecondsSinceEpoch}.jpg',
       );
 
-      await fixedFile.writeAsBytes(fixedBytes);
+      await fixedFile.writeAsBytes(fixedBytes, flush: true);
       return fixedFile;
     } catch (e) {
       debugPrint('Ön kamera ayna düzeltme hatası: $e');
@@ -213,8 +287,7 @@ class _CameraPageState extends State<CameraPage> {
   }
 
   Future<void> takePhoto() async {
-    if (controller == null) return;
-    if (!controller!.value.isInitialized) return;
+    if (!_hasReadyController) return;
     if (takingPhoto || switchingCamera) return;
 
     setState(() => takingPhoto = true);
@@ -227,7 +300,8 @@ class _CameraPageState extends State<CameraPage> {
       final XFile image = await controller!.takePicture();
       final File finalImage = await fixFrontCameraMirrorIfNeeded(image.path);
 
-      await GallerySaver.saveImage(finalImage.path);
+      // Galeriye kaydetmeyi ekranda bekletmiyoruz. Önizleme daha hızlı açılır.
+      unawaited(GallerySaver.saveImage(finalImage.path));
 
       if (!mounted) return;
 
@@ -235,8 +309,12 @@ class _CameraPageState extends State<CameraPage> {
 
       Navigator.push(
         context,
-        MaterialPageRoute(
-          builder: (_) => PreviewPage(imagePath: finalImage.path),
+        PageRouteBuilder(
+          pageBuilder: (_, __, ___) => PreviewPage(imagePath: finalImage.path),
+          transitionsBuilder: (_, animation, __, child) {
+            return FadeTransition(opacity: animation, child: child);
+          },
+          transitionDuration: const Duration(milliseconds: 120),
         ),
       );
     } catch (e) {
@@ -246,25 +324,51 @@ class _CameraPageState extends State<CameraPage> {
   }
 
   Future<void> openGallery() async {
+    if (takingPhoto || switchingCamera) return;
+
     final picker = ImagePicker();
 
     final image = await picker.pickImage(
       source: ImageSource.gallery,
       imageQuality: 95,
+      maxWidth: 2200,
+      maxHeight: 2200,
+      requestFullMetadata: false,
     );
 
     if (image == null || !mounted) return;
 
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => PreviewPage(imagePath: image.path),
+      PageRouteBuilder(
+        pageBuilder: (_, __, ___) => PreviewPage(imagePath: image.path),
+        transitionsBuilder: (_, animation, __, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+        transitionDuration: const Duration(milliseconds: 120),
       ),
     );
   }
 
+  void _setZoomFast(double nextZoom) {
+    if (!_hasReadyController || switchingCamera) return;
+
+    final double fixedZoom = nextZoom.clamp(minZoom, maxZoom).toDouble();
+
+    if ((fixedZoom - currentZoom).abs() < 0.025) return;
+
+    final now = DateTime.now();
+    if (now.difference(_lastZoomChange).inMilliseconds < 24) return;
+
+    _lastZoomChange = now;
+    currentZoom = fixedZoom;
+    zoomNotifier.value = fixedZoom;
+
+    controller!.setZoomLevel(fixedZoom).catchError((_) {});
+  }
+
   Widget cameraPreview() {
-    if (switchingCamera || controller == null || !controller!.value.isInitialized) {
+    if (!_hasReadyController) {
       return const SizedBox.expand(child: ColoredBox(color: Colors.black));
     }
 
@@ -274,27 +378,22 @@ class _CameraPageState extends State<CameraPage> {
       return const SizedBox.expand(child: ColoredBox(color: Colors.black));
     }
 
-    return GestureDetector(
-      onScaleStart: (_) => baseZoom = currentZoom,
-      onScaleUpdate: (details) async {
-        if (controller == null || !controller!.value.isInitialized) return;
-
-        final nextZoom = (baseZoom * details.scale).clamp(minZoom, maxZoom);
-
-        try {
-          await controller!.setZoomLevel(nextZoom);
-          currentZoom = nextZoom;
-          if (mounted) setState(() {});
-        } catch (_) {}
-      },
-      child: SizedBox.expand(
-        child: ClipRect(
-          child: FittedBox(
-            fit: BoxFit.cover,
-            child: SizedBox(
-              width: previewSize.height,
-              height: previewSize.width,
-              child: CameraPreview(controller!),
+    return RepaintBoundary(
+      child: GestureDetector(
+        onScaleStart: (_) => baseZoom = currentZoom,
+        onScaleUpdate: (details) {
+          final nextZoom = (baseZoom * details.scale).clamp(minZoom, maxZoom);
+          _setZoomFast(nextZoom.toDouble());
+        },
+        child: SizedBox.expand(
+          child: ClipRect(
+            child: FittedBox(
+              fit: BoxFit.cover,
+              child: SizedBox(
+                width: previewSize.height,
+                height: previewSize.width,
+                child: CameraPreview(controller!),
+              ),
             ),
           ),
         ),
@@ -304,6 +403,9 @@ class _CameraPageState extends State<CameraPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    zoomNotifier.dispose();
+
     try {
       if (isBack) controller?.setFlashMode(FlashMode.off);
     } catch (_) {}
@@ -314,12 +416,14 @@ class _CameraPageState extends State<CameraPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (loading) {
-      return const Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(child: CircularProgressIndicator(color: Colors.white)),
-      );
+    if (cameraError && !loading) {
+      return CameraErrorBody(onRetry: initCamera);
     }
+
+    final double navigationSafeBottom = math.max(
+      74.0,
+      MediaQuery.of(context).viewPadding.bottom + 46.0,
+    );
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -342,26 +446,37 @@ class _CameraPageState extends State<CameraPage> {
               ),
             ),
           ),
-          if (currentZoom > 1.05 && !switchingCamera)
-            Positioned(
-              left: 0,
-              right: 0,
-              top: 92,
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.45),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: Colors.white24),
-                  ),
-                  child: Text(
-                    '${currentZoom.toStringAsFixed(1)}x',
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
+          ValueListenableBuilder<double>(
+            valueListenable: zoomNotifier,
+            builder: (context, zoom, _) {
+              if (zoom <= 1.05 || switchingCamera || loading) {
+                return const SizedBox.shrink();
+              }
+
+              return Positioned(
+                left: 0,
+                right: 0,
+                top: 92,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.45),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: Text(
+                      '${zoom.toStringAsFixed(1)}x',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
+              );
+            },
+          ),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 17, 16, 0),
@@ -375,7 +490,7 @@ class _CameraPageState extends State<CameraPage> {
                       child: CameraCircleButton(
                         icon: flashOn ? Icons.flash_on_rounded : Icons.flash_off_rounded,
                         onTap: isBack ? toggleFlash : () {},
-                        disabled: !isBack,
+                        disabled: !isBack || switchingCamera || loading,
                       ),
                     ),
                     const Align(
@@ -402,26 +517,10 @@ class _CameraPageState extends State<CameraPage> {
               ),
             ),
           ),
-          const Positioned(
-            left: 0,
-            right: 0,
-            bottom: 132,
-            child: Center(
-              child: Text(
-                'Fotoğraf çek veya galeriden seç',
-                textScaler: TextScaler.noScaling,
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w800,
-                  fontSize: 13,
-                ),
-              ),
-            ),
-          ),
           Positioned(
             left: 0,
             right: 0,
-            bottom: 34,
+            bottom: navigationSafeBottom,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
@@ -431,29 +530,25 @@ class _CameraPageState extends State<CameraPage> {
                   square: true,
                 ),
                 GestureDetector(
-                  onTap: takePhoto,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    width: takingPhoto ? 76 : 92,
-                    height: takingPhoto ? 76 : 92,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 5),
-                      boxShadow: [
-                        BoxShadow(
-                          color: const Color(0xFFFF00B8).withOpacity(0.45),
-                          blurRadius: 26,
-                          spreadRadius: 2,
-                        ),
-                      ],
-                    ),
-                    child: Center(
-                      child: Container(
-                        width: takingPhoto ? 52 : 68,
-                        height: takingPhoto ? 52 : 68,
-                        decoration: const BoxDecoration(
-                          color: Colors.white,
-                          shape: BoxShape.circle,
+                  onTap: _hasReadyController && !loading ? takePhoto : null,
+                  child: Opacity(
+                    opacity: _hasReadyController && !loading ? 1 : 0.55,
+                    child: Container(
+                      width: 88,
+                      height: 88,
+                      decoration: BoxDecoration(
+                        color: Colors.transparent,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 5),
+                      ),
+                      child: Center(
+                        child: Container(
+                          width: 64,
+                          height: 64,
+                          decoration: const BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                          ),
                         ),
                       ),
                     ),
@@ -468,6 +563,117 @@ class _CameraPageState extends State<CameraPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+class CameraInstantLoadingBody extends StatelessWidget {
+  const CameraInstantLoadingBody({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          ColoredBox(color: Colors.black),
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'NOVA',
+                  textScaler: TextScaler.noScaling,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 6,
+                  ),
+                ),
+                SizedBox(height: 16),
+                SizedBox(
+                  width: 34,
+                  height: 34,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2.6,
+                  ),
+                ),
+                SizedBox(height: 12),
+                Text(
+                  'Kamera açılıyor',
+                  textScaler: TextScaler.noScaling,
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class CameraErrorBody extends StatelessWidget {
+  final Future<void> Function({bool showFullLoading}) onRetry;
+
+  const CameraErrorBody({super.key, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(22),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.camera_alt_outlined, color: Colors.white, size: 48),
+              const SizedBox(height: 12),
+              const Text(
+                'Kamera açılamadı',
+                textScaler: TextScaler.noScaling,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w900,
+                  fontSize: 18,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Kamera iznini kontrol edip tekrar dene.',
+                textAlign: TextAlign.center,
+                textScaler: TextScaler.noScaling,
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontFamily: 'Roboto',
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () => onRetry(showFullLoading: true),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.white,
+                  foregroundColor: Colors.black,
+                ),
+                child: const Text(
+                  'Tekrar dene',
+                  textScaler: TextScaler.noScaling,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

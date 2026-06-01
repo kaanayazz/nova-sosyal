@@ -1,9 +1,18 @@
 // lib/pages/auth_page.dart
+//
+// NOVA giriş sayfası
+// - 6 saniye premium hoş geldin / loading ekranı
+// - NOVA logosu main.dart ile aynı V renkleri
+// - Açıklama yazıları kaldırıldı
+// - Kırmızı ekran hatasına sebep olan withOpacity değerleri güvenli hale getirildi
+// - Tüm ekranlar küçük telefonlarda taşmasın diye responsive hazırlandı
 
-import 'dart:ui';
-import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 class AuthPage extends StatefulWidget {
@@ -13,146 +22,122 @@ class AuthPage extends StatefulWidget {
   State<AuthPage> createState() => _AuthPageState();
 }
 
-class _AuthPageState extends State<AuthPage>
-    with SingleTickerProviderStateMixin {
-  final nameController = TextEditingController();
-  final phoneController = TextEditingController();
-  final districtController = TextEditingController();
-  final emailController = TextEditingController();
-  final passwordController = TextEditingController();
+class _AuthPageState extends State<AuthPage> with TickerProviderStateMixin {
+  final PageController pageController = PageController();
 
-  bool isRegister = false;
+  late final AnimationController welcomeController;
+  late final AnimationController bgController;
+  late final AnimationController logoController;
+  late final AnimationController floatController;
+  late final AnimationController iconController;
+
+  bool showWelcome = true;
   bool loading = false;
-  bool passwordVisible = false;
+  int currentPage = 0;
 
-  String? selectedCity;
-
-  late final AnimationController neonController;
-
-  final List<String> cities = const [
-    'Adana',
-    'Adıyaman',
-    'Afyonkarahisar',
-    'Ağrı',
-    'Amasya',
-    'Ankara',
-    'Antalya',
-    'Artvin',
-    'Aydın',
-    'Balıkesir',
-    'Bilecik',
-    'Bingöl',
-    'Bitlis',
-    'Bolu',
-    'Burdur',
-    'Bursa',
-    'Çanakkale',
-    'Çankırı',
-    'Çorum',
-    'Denizli',
-    'Diyarbakır',
-    'Edirne',
-    'Elazığ',
-    'Erzincan',
-    'Erzurum',
-    'Eskişehir',
-    'Gaziantep',
-    'Giresun',
-    'Gümüşhane',
-    'Hakkari',
-    'Hatay',
-    'Isparta',
-    'Mersin',
-    'İstanbul',
-    'İzmir',
-    'Kars',
-    'Kastamonu',
-    'Kayseri',
-    'Kırklareli',
-    'Kırşehir',
-    'Kocaeli',
-    'Konya',
-    'Kütahya',
-    'Malatya',
-    'Manisa',
-    'Kahramanmaraş',
-    'Mardin',
-    'Muğla',
-    'Muş',
-    'Nevşehir',
-    'Niğde',
-    'Ordu',
-    'Rize',
-    'Sakarya',
-    'Samsun',
-    'Siirt',
-    'Sinop',
-    'Sivas',
-    'Tekirdağ',
-    'Tokat',
-    'Trabzon',
-    'Tunceli',
-    'Şanlıurfa',
-    'Uşak',
-    'Van',
-    'Yozgat',
-    'Zonguldak',
-    'Aksaray',
-    'Bayburt',
-    'Karaman',
-    'Kırıkkale',
-    'Batman',
-    'Şırnak',
-    'Bartın',
-    'Ardahan',
-    'Iğdır',
-    'Yalova',
-    'Karabük',
-    'Kilis',
-    'Osmaniye',
-    'Düzce',
+  final List<_OnboardingData> pages = const [
+    _OnboardingData(
+      title: 'Araç dünyan tek ekranda',
+      icon: Icons.directions_car_filled_rounded,
+      secondIcon: Icons.auto_awesome_rounded,
+      miniIcons: [
+        Icons.speed_rounded,
+        Icons.favorite_rounded,
+        Icons.location_on_rounded,
+      ],
+    ),
+    _OnboardingData(
+      title: 'Takip et, mesajlaş, bağlan',
+      icon: Icons.chat_bubble_rounded,
+      secondIcon: Icons.people_alt_rounded,
+      miniIcons: [
+        Icons.notifications_rounded,
+        Icons.person_add_alt_1_rounded,
+        Icons.lock_rounded,
+      ],
+    ),
+    _OnboardingData(
+      title: 'İlan ve çekici desteği',
+      icon: Icons.car_repair_rounded,
+      secondIcon: Icons.local_shipping_rounded,
+      miniIcons: [
+        Icons.sell_rounded,
+        Icons.call_rounded,
+        Icons.map_rounded,
+      ],
+    ),
+    _OnboardingData(
+      title: 'Masraflarını kontrol et',
+      icon: Icons.insert_chart_rounded,
+      secondIcon: Icons.account_balance_wallet_rounded,
+      miniIcons: [
+        Icons.receipt_long_rounded,
+        Icons.event_rounded,
+        Icons.storefront_rounded,
+      ],
+    ),
   ];
 
   @override
   void initState() {
     super.initState();
-    neonController = AnimationController(
+
+    welcomeController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 4),
+      duration: const Duration(milliseconds: 1200),
     )..repeat(reverse: true);
+
+    bgController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 10),
+    )..repeat();
+
+    logoController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 3),
+    )..repeat(reverse: true);
+
+    floatController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2600),
+    )..repeat(reverse: true);
+
+    iconController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 5),
+    )..repeat();
+
+    Timer(const Duration(seconds: 6), () {
+      if (!mounted) return;
+      setState(() => showWelcome = false);
+      welcomeController.stop();
+    });
   }
 
   @override
   void dispose() {
-    neonController.dispose();
-    nameController.dispose();
-    phoneController.dispose();
-    districtController.dispose();
-    emailController.dispose();
-    passwordController.dispose();
+    pageController.dispose();
+    welcomeController.dispose();
+    bgController.dispose();
+    logoController.dispose();
+    floatController.dispose();
+    iconController.dispose();
     super.dispose();
   }
 
   String friendlyAuthError(Object error) {
     if (error is FirebaseAuthException) {
       switch (error.code) {
-        case 'invalid-email':
-          return 'E-posta adresi geçerli değil.';
-        case 'user-disabled':
-          return 'Bu hesap devre dışı bırakılmış.';
-        case 'user-not-found':
-          return 'Bu e-posta ile kayıtlı kullanıcı bulunamadı.';
-        case 'wrong-password':
+        case 'account-exists-with-different-credential':
+          return 'Bu e-posta farklı bir giriş yöntemiyle kullanılıyor.';
         case 'invalid-credential':
-          return 'E-posta veya şifre hatalı.';
-        case 'email-already-in-use':
-          return 'Bu e-posta adresi zaten kayıtlı.';
-        case 'weak-password':
-          return 'Şifre en az 6 karakter olmalı.';
+          return 'Giriş bilgisi doğrulanamadı. Tekrar dene.';
         case 'network-request-failed':
           return 'İnternet bağlantını kontrol et.';
+        case 'user-disabled':
+          return 'Bu hesap devre dışı bırakılmış.';
         default:
-          return 'İşlem tamamlanamadı. Tekrar dene.';
+          return 'Google ile giriş tamamlanamadı. Tekrar dene.';
       }
     }
     return 'Bir sorun oluştu. Lütfen tekrar dene.';
@@ -160,7 +145,6 @@ class _AuthPageState extends State<AuthPage>
 
   void showError(String message) {
     if (!mounted) return;
-
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -168,121 +152,64 @@ class _AuthPageState extends State<AuthPage>
           textScaler: TextScaler.noScaling,
           style: const TextStyle(
             fontFamily: 'Roboto',
-            fontWeight: FontWeight.w800,
+            fontWeight: FontWeight.w900,
           ),
         ),
         backgroundColor: Colors.black,
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
+        margin: const EdgeInsets.all(14),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       ),
     );
   }
 
-  Future<void> createUserDoc(
-      User user, {
-        String provider = 'email',
-      }) async {
-    final userRef =
-    FirebaseFirestore.instance.collection('users').doc(user.uid);
-
+  Future<void> createUserDoc(User user) async {
+    final userRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
     final currentDoc = await userRef.get();
+    final oldData = currentDoc.data() ?? <String, dynamic>{};
     final isFirstCreate = !currentDoc.exists;
 
     await userRef.set({
       'uid': user.uid,
-      'email': user.email ?? emailController.text.trim(),
-      'displayName': provider == 'google'
-          ? (user.displayName ?? '')
-          : nameController.text.trim(),
-      'phone': provider == 'google' ? '' : phoneController.text.trim(),
-      'city': provider == 'google' ? '' : selectedCity,
-      'district':
-      provider == 'google' ? '' : districtController.text.trim(),
-      'photoUrl': user.photoURL ?? '',
-      'provider': provider,
-      'role': 'user',
-      'profileCompleted': provider == 'email',
-      'followersCount': 0,
-      'followingCount': 0,
-      'postsCount': 0,
+      'email': user.email ?? '',
+      'displayName': user.displayName ?? '',
+      'phone': oldData['phone'] ?? '',
+      'city': oldData['city'] ?? '',
+      'district': oldData['district'] ?? '',
+      'photoUrl': user.photoURL ?? oldData['photoUrl'] ?? '',
+      'provider': 'google',
+      'role': oldData['role'] ?? 'user',
+      'profileCompleted': oldData['profileCompleted'] ?? false,
+      'followersCount': oldData['followersCount'] ?? 0,
+      'followingCount': oldData['followingCount'] ?? 0,
+      'postsCount': oldData['postsCount'] ?? 0,
       'lastLoginAt': FieldValue.serverTimestamp(),
       if (isFirstCreate) 'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
 
   Future<void> signInWithGoogle() async {
+    if (loading) return;
+
     try {
       setState(() => loading = true);
 
       final googleUser = await GoogleSignIn().signIn();
-
       if (googleUser == null) {
         if (mounted) setState(() => loading = false);
         return;
       }
 
       final googleAuth = await googleUser.authentication;
-
       final credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
 
-      final result =
-      await FirebaseAuth.instance.signInWithCredential(credential);
-
-      if (result.user != null) {
-        await createUserDoc(result.user!, provider: 'google');
-      }
-    } catch (_) {
-      showError('Google ile giriş yapılamadı. Lütfen tekrar dene.');
-    }
-
-    if (mounted) setState(() => loading = false);
-  }
-
-  Future<void> submitEmailPassword() async {
-    FocusScope.of(context).unfocus();
-
-    try {
-      setState(() => loading = true);
-
-      final email = emailController.text.trim();
-      final password = passwordController.text.trim();
-
-      if (email.isEmpty || password.isEmpty) {
-        showError('E-posta ve şifre alanlarını doldur.');
-        setState(() => loading = false);
-        return;
-      }
-
-      if (isRegister) {
-        if (nameController.text.trim().isEmpty ||
-            phoneController.text.trim().isEmpty ||
-            selectedCity == null ||
-            districtController.text.trim().isEmpty) {
-          showError('Lütfen tüm kayıt bilgilerini doldur.');
-          setState(() => loading = false);
-          return;
-        }
-
-        final result =
-        await FirebaseAuth.instance.createUserWithEmailAndPassword(
-          email: email,
-          password: password,
-        );
-
-        if (result.user != null) {
-          await result.user!.updateDisplayName(nameController.text.trim());
-          await createUserDoc(result.user!, provider: 'email');
-        }
-      } else {
-        await FirebaseAuth.instance.signInWithEmailAndPassword(
-          email: email,
-          password: password,
-        );
+      final result = await FirebaseAuth.instance.signInWithCredential(credential);
+      final user = result.user;
+      if (user != null) {
+        await createUserDoc(user);
       }
     } catch (e) {
       showError(friendlyAuthError(e));
@@ -291,10 +218,102 @@ class _AuthPageState extends State<AuthPage>
     if (mounted) setState(() => loading = false);
   }
 
-  void toggleMode() {
-    setState(() {
-      isRegister = !isRegister;
-    });
+  void showAppleSoon() {
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.32),
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 22),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(28),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFFFF00B8).withOpacity(0.18),
+                  blurRadius: 30,
+                  offset: const Offset(0, 14),
+                ),
+                BoxShadow(
+                  color: const Color(0xFF00D9FF).withOpacity(0.14),
+                  blurRadius: 24,
+                  offset: const Offset(0, -5),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.apple_rounded, size: 54, color: Colors.black),
+                const SizedBox(height: 12),
+                const Text(
+                  'Apple ile giriş yakında',
+                  textScaler: TextScaler.noScaling,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontSize: 21,
+                    fontWeight: FontWeight.w900,
+                    color: Colors.black,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.black,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                    child: const Text(
+                      'Tamam',
+                      textScaler: TextScaler.noScaling,
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void nextPage() {
+    if (currentPage >= pages.length) return;
+    pageController.nextPage(
+      duration: const Duration(milliseconds: 520),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  void previousPage() {
+    if (currentPage <= 0) return;
+    pageController.previousPage(
+      duration: const Duration(milliseconds: 520),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  void skipToLogin() {
+    pageController.animateToPage(
+      pages.length,
+      duration: const Duration(milliseconds: 650),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   @override
@@ -304,87 +323,223 @@ class _AuthPageState extends State<AuthPage>
         textScaler: const TextScaler.linear(1.0),
       ),
       child: Scaffold(
+        resizeToAvoidBottomInset: true,
         backgroundColor: Colors.white,
-        body: Stack(
-          children: [
-            const _NovaBackground(),
-            SafeArea(
-              child: Center(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
-                  child: Column(
-                    children: [
-                      _NovaHeader(controller: neonController),
-                      const SizedBox(height: 26),
-                      _AuthGlassCard(
-                        isRegister: isRegister,
-                        loading: loading,
-                        passwordVisible: passwordVisible,
-                        nameController: nameController,
-                        phoneController: phoneController,
-                        districtController: districtController,
-                        emailController: emailController,
-                        passwordController: passwordController,
-                        selectedCity: selectedCity,
-                        cities: cities,
-                        onCityChanged: (value) {
-                          setState(() => selectedCity = value);
-                        },
-                        onPasswordVisibilityTap: () {
-                          setState(() {
-                            passwordVisible = !passwordVisible;
-                          });
-                        },
-                        onSubmit: submitEmailPassword,
-                        onGoogleTap: signInWithGoogle,
-                        onToggleMode: toggleMode,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
+        body: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 500),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          child: showWelcome
+              ? _WelcomeScreen(
+            key: const ValueKey('welcome'),
+            welcomeController: welcomeController,
+            logoController: logoController,
+          )
+              : _MainFlow(
+            key: const ValueKey('main_flow'),
+            bgController: bgController,
+            logoController: logoController,
+            floatController: floatController,
+            iconController: iconController,
+            pageController: pageController,
+            pages: pages,
+            currentPage: currentPage,
+            loading: loading,
+            onPageChanged: (index) => setState(() => currentPage = index),
+            onGoogleTap: signInWithGoogle,
+            onAppleTap: showAppleSoon,
+            onBack: previousPage,
+            onNext: nextPage,
+            onSkip: skipToLogin,
+          ),
         ),
       ),
     );
   }
 }
 
-class _NovaBackground extends StatelessWidget {
-  const _NovaBackground();
+class _WelcomeScreen extends StatelessWidget {
+  final AnimationController welcomeController;
+  final AnimationController logoController;
+
+  const _WelcomeScreen({
+    super.key,
+    required this.welcomeController,
+    required this.logoController,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final height = MediaQuery.sizeOf(context).height;
+    final small = height < 680;
+
+    return Stack(
+      children: [
+        Positioned.fill(child: _SoftWelcomeBackground(controller: logoController)),
+        SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return SingleChildScrollView(
+                physics: const NeverScrollableScrollPhysics(),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 22),
+                      child: AnimatedBuilder(
+                        animation: welcomeController,
+                        builder: (context, _) {
+                          final opacity = (0.52 + welcomeController.value * 0.48).clamp(0.0, 1.0);
+                          final scale = 0.98 + welcomeController.value * 0.03;
+
+                          return Opacity(
+                            opacity: opacity,
+                            child: Transform.scale(
+                              scale: scale,
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  _NovaLogoText(
+                                    controller: logoController,
+                                    fontSize: small ? 42 : 50,
+                                    letterSpacing: small ? 5 : 6,
+                                    studio: false,
+                                  ),
+                                  SizedBox(height: small ? 18 : 24),
+                                  const Text(
+                                    'Yeni sosyal araç platformu',
+                                    textScaler: TextScaler.noScaling,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontFamily: 'Roboto',
+                                      color: Colors.black54,
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  const Text(
+                                    'NOVA’ya hoş geldin',
+                                    textScaler: TextScaler.noScaling,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontFamily: 'Roboto',
+                                      color: Colors.black,
+                                      fontSize: 25,
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: -0.3,
+                                    ),
+                                  ),
+                                  SizedBox(height: small ? 24 : 34),
+                                  const SizedBox(
+                                    width: 28,
+                                    height: 28,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.5,
+                                      color: Colors.black,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _MainFlow extends StatelessWidget {
+  final AnimationController bgController;
+  final AnimationController logoController;
+  final AnimationController floatController;
+  final AnimationController iconController;
+  final PageController pageController;
+  final List<_OnboardingData> pages;
+  final int currentPage;
+  final bool loading;
+  final ValueChanged<int> onPageChanged;
+  final VoidCallback onGoogleTap;
+  final VoidCallback onAppleTap;
+  final VoidCallback onBack;
+  final VoidCallback onNext;
+  final VoidCallback onSkip;
+
+  const _MainFlow({
+    super.key,
+    required this.bgController,
+    required this.logoController,
+    required this.floatController,
+    required this.iconController,
+    required this.pageController,
+    required this.pages,
+    required this.currentPage,
+    required this.loading,
+    required this.onPageChanged,
+    required this.onGoogleTap,
+    required this.onAppleTap,
+    required this.onBack,
+    required this.onNext,
+    required this.onSkip,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        Positioned(
-          top: -120,
-          right: -120,
-          child: _GlowCircle(
-            size: 270,
-            color: const Color(0xFFFF00B8).withOpacity(0.20),
-          ),
-        ),
-        Positioned(
-          top: 180,
-          left: -150,
-          child: _GlowCircle(
-            size: 300,
-            color: const Color(0xFF00D9FF).withOpacity(0.18),
-          ),
-        ),
-        Positioned(
-          bottom: -120,
-          right: -100,
-          child: _GlowCircle(
-            size: 260,
-            color: const Color(0xFFFF7A00).withOpacity(0.14),
-          ),
-        ),
-        Positioned.fill(
-          child: CustomPaint(
-            painter: _GridPainter(),
+        Positioned.fill(child: _NovaAnimatedBackground(controller: bgController)),
+        SafeArea(
+          child: Column(
+            children: [
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 64,
+                child: Center(
+                  child: _NovaLogoText(controller: logoController),
+                ),
+              ),
+              Expanded(
+                child: PageView.builder(
+                  controller: pageController,
+                  itemCount: pages.length + 1,
+                  onPageChanged: onPageChanged,
+                  itemBuilder: (context, index) {
+                    if (index == pages.length) {
+                      return _LoginPage(
+                        loading: loading,
+                        floatController: floatController,
+                        iconController: iconController,
+                        onGoogleTap: onGoogleTap,
+                        onAppleTap: onAppleTap,
+                      );
+                    }
+
+                    return _OnboardingPage(
+                      data: pages[index],
+                      index: index,
+                      floatController: floatController,
+                      iconController: iconController,
+                    );
+                  },
+                ),
+              ),
+              _BottomControls(
+                currentPage: currentPage,
+                totalPages: pages.length + 1,
+                isLoginPage: currentPage == pages.length,
+                onBack: onBack,
+                onNext: onNext,
+                onSkip: onSkip,
+              ),
+            ],
           ),
         ),
       ],
@@ -392,378 +547,348 @@ class _NovaBackground extends StatelessWidget {
   }
 }
 
-class _GlowCircle extends StatelessWidget {
-  final double size;
-  final Color color;
+class _NovaLogoText extends StatelessWidget {
+  final AnimationController controller;
+  final double fontSize;
+  final double letterSpacing;
+  final bool studio;
 
-  const _GlowCircle({
-    required this.size,
-    required this.color,
+  const _NovaLogoText({
+    required this.controller,
+    this.fontSize = 25,
+    this.letterSpacing = 4,
+    this.studio = true,
   });
 
   @override
   Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: ImageFiltered(
-        imageFilter: ImageFilter.blur(sigmaX: 42, sigmaY: 42),
-        child: Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-          ),
-        ),
-      ),
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            RichText(
+              textScaler: TextScaler.noScaling,
+              text: TextSpan(
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  fontSize: fontSize,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: letterSpacing,
+                  color: Colors.black,
+                  height: 1,
+                ),
+                children: [
+                  const TextSpan(text: 'NO'),
+                  WidgetSpan(
+                    alignment: PlaceholderAlignment.middle,
+                    child: ShaderMask(
+                      shaderCallback: (bounds) {
+                        return LinearGradient(
+                          begin: Alignment(-1 + controller.value * 2, 0),
+                          end: Alignment(1 - controller.value * 2, 0),
+                          colors: const [
+                            Color(0xFF00D9FF),
+                            Color(0xFF3C7BFF),
+                            Color(0xFFFF00B8),
+                            Color(0xFFFF7A00),
+                          ],
+                        ).createShader(bounds);
+                      },
+                      child: Text(
+                        'V',
+                        textScaler: TextScaler.noScaling,
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          fontSize: fontSize,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: letterSpacing,
+                          color: Colors.white,
+                          height: 1,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const TextSpan(text: 'A'),
+                ],
+              ),
+            ),
+            if (studio) ...[
+              const SizedBox(height: 1),
+              const Text(
+                'Kaan Ayaz Studio',
+                textScaler: TextScaler.noScaling,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  color: Colors.black,
+                  fontSize: 7.5,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.3,
+                  height: 1,
+                ),
+              ),
+            ],
+          ],
+        );
+      },
     );
   }
 }
 
-class _GridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.black.withOpacity(0.025)
-      ..strokeWidth = 1;
+class _OnboardingData {
+  final String title;
+  final IconData icon;
+  final IconData secondIcon;
+  final List<IconData> miniIcons;
 
-    const step = 34.0;
-
-    for (double x = 0; x < size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-
-    for (double y = 0; y < size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  const _OnboardingData({
+    required this.title,
+    required this.icon,
+    required this.secondIcon,
+    required this.miniIcons,
+  });
 }
 
-class _NovaHeader extends StatelessWidget {
-  final AnimationController controller;
+class _OnboardingPage extends StatelessWidget {
+  final _OnboardingData data;
+  final int index;
+  final AnimationController floatController;
+  final AnimationController iconController;
 
-  const _NovaHeader({
-    required this.controller,
+  const _OnboardingPage({
+    required this.data,
+    required this.index,
+    required this.floatController,
+    required this.iconController,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        AnimatedBuilder(
-          animation: controller,
-          builder: (context, _) {
-            return Container(
-              width: 118,
-              height: 118,
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  begin: Alignment(-1 + controller.value * 2, -1),
-                  end: Alignment(1 - controller.value * 2, 1),
-                  colors: const [
-                    Color(0xFF00D9FF),
-                    Color(0xFF3C7BFF),
-                    Color(0xFFFF00B8),
-                    Color(0xFFFF7A00),
-                  ],
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFFFF00B8).withOpacity(0.22),
-                    blurRadius: 24,
-                    spreadRadius: 2,
-                  ),
-                ],
-              ),
-              child: Container(
-                decoration: const BoxDecoration(
-                  color: Colors.white,
-                  shape: BoxShape.circle,
-                ),
-                child: Center(
-                  child: RichText(
-                    textScaler: TextScaler.noScaling,
-                    text: const TextSpan(
-                      style: TextStyle(
-                        fontFamily: 'Roboto',
-                        fontSize: 32,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 3,
-                        color: Colors.black,
+    final height = MediaQuery.sizeOf(context).height;
+    final small = height < 680;
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(22, small ? 0 : 8, 22, 4),
+      child: Column(
+        children: [
+          Expanded(
+            child: Center(
+              child: AnimatedBuilder(
+                animation: Listenable.merge([floatController, iconController]),
+                builder: (context, _) {
+                  final floatY = math.sin(floatController.value * math.pi) * -10;
+                  final pulse = 1 + (math.sin(iconController.value * math.pi * 2) * 0.025);
+                  return Transform.translate(
+                    offset: Offset(0, floatY),
+                    child: Transform.scale(
+                      scale: pulse,
+                      child: _AnimatedIconStage(
+                        icon: data.icon,
+                        secondIcon: data.secondIcon,
+                        miniIcons: data.miniIcons,
+                        controller: iconController,
+                        index: index,
+                        size: small ? 236 : 286,
                       ),
-                      children: [
-                        TextSpan(text: 'NO'),
-                        TextSpan(
-                          text: 'V',
-                          style: TextStyle(
-                            color: Color(0xFFFF00B8),
-                          ),
-                        ),
-                        TextSpan(text: 'A'),
-                      ],
                     ),
-                  ),
-                ),
+                  );
+                },
               ),
-            );
-          },
-        ),
-        const SizedBox(height: 16),
-        const Text(
-          'NOVA',
-          textScaler: TextScaler.noScaling,
-          style: TextStyle(
-            fontFamily: 'Roboto',
-            fontSize: 34,
-            fontWeight: FontWeight.w900,
-            letterSpacing: 6,
-            color: Colors.black,
+            ),
           ),
-        ),
-        const SizedBox(height: 8),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 14),
-          child: Text(
-            'Araç dünyanı, ilanlarını, mağazanı ve profilini tek ekranda birleştiren yeni nesil platform.',
+          Text(
+            data.title,
             textScaler: TextScaler.noScaling,
             textAlign: TextAlign.center,
             style: TextStyle(
               fontFamily: 'Roboto',
-              color: Colors.black54,
-              fontSize: 13.5,
-              height: 1.45,
-              fontWeight: FontWeight.w700,
+              fontSize: small ? 24 : 27,
+              fontWeight: FontWeight.w900,
+              letterSpacing: -0.4,
+              color: Colors.black,
             ),
           ),
-        ),
-      ],
-    );
-  }
-}
-
-class _AuthGlassCard extends StatelessWidget {
-  final bool isRegister;
-  final bool loading;
-  final bool passwordVisible;
-
-  final TextEditingController nameController;
-  final TextEditingController phoneController;
-  final TextEditingController districtController;
-  final TextEditingController emailController;
-  final TextEditingController passwordController;
-
-  final String? selectedCity;
-  final List<String> cities;
-
-  final ValueChanged<String?> onCityChanged;
-  final VoidCallback onPasswordVisibilityTap;
-  final VoidCallback onSubmit;
-  final VoidCallback onGoogleTap;
-  final VoidCallback onToggleMode;
-
-  const _AuthGlassCard({
-    required this.isRegister,
-    required this.loading,
-    required this.passwordVisible,
-    required this.nameController,
-    required this.phoneController,
-    required this.districtController,
-    required this.emailController,
-    required this.passwordController,
-    required this.selectedCity,
-    required this.cities,
-    required this.onCityChanged,
-    required this.onPasswordVisibilityTap,
-    required this.onSubmit,
-    required this.onGoogleTap,
-    required this.onToggleMode,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(32),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.fromLTRB(18, 20, 18, 18),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.82),
-            borderRadius: BorderRadius.circular(32),
-            border: Border.all(color: Colors.black.withOpacity(0.08)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.08),
-                blurRadius: 28,
-                offset: const Offset(0, 18),
-              ),
-            ],
-          ),
-          child: Column(
-            children: [
-              Text(
-                isRegister ? 'Yeni hesap oluştur' : 'Hesabına giriş yap',
-                textScaler: TextScaler.noScaling,
-                style: const TextStyle(
-                  fontFamily: 'Roboto',
-                  color: Colors.black,
-                  fontSize: 21,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                isRegister
-                    ? 'NOVA profilini oluştur ve platforma katıl.'
-                    : 'Kaldığın yerden devam et.',
-                textScaler: TextScaler.noScaling,
-                style: const TextStyle(
-                  fontFamily: 'Roboto',
-                  color: Colors.black45,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 20),
-
-              if (!isRegister) ...[
-                _GoogleButton(
-                  loading: loading,
-                  onTap: onGoogleTap,
-                ),
-                const SizedBox(height: 18),
-                const _DividerText(text: 'veya e-posta ile devam et'),
-                const SizedBox(height: 18),
-              ],
-
-              if (isRegister) ...[
-                _NovaInput(
-                  controller: nameController,
-                  label: 'Ad Soyad',
-                  icon: Icons.person_rounded,
-                ),
-                const SizedBox(height: 12),
-                _NovaInput(
-                  controller: phoneController,
-                  label: 'Telefon Numarası',
-                  icon: Icons.phone_rounded,
-                  keyboardType: TextInputType.phone,
-                ),
-                const SizedBox(height: 12),
-                _CityDropdown(
-                  value: selectedCity,
-                  cities: cities,
-                  onChanged: onCityChanged,
-                ),
-                const SizedBox(height: 12),
-                _NovaInput(
-                  controller: districtController,
-                  label: 'İlçe',
-                  icon: Icons.map_rounded,
-                ),
-                const SizedBox(height: 12),
-              ],
-
-              _NovaInput(
-                controller: emailController,
-                label: 'E-posta',
-                icon: Icons.email_rounded,
-                keyboardType: TextInputType.emailAddress,
-              ),
-              const SizedBox(height: 12),
-              _NovaInput(
-                controller: passwordController,
-                label: 'Şifre',
-                icon: Icons.lock_rounded,
-                obscureText: !passwordVisible,
-                suffix: IconButton(
-                  onPressed: onPasswordVisibilityTap,
-                  icon: Icon(
-                    passwordVisible
-                        ? Icons.visibility_off_rounded
-                        : Icons.visibility_rounded,
-                    color: Colors.black45,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
-
-              _PrimaryButton(
-                loading: loading,
-                text: isRegister ? 'Kayıt Ol' : 'Giriş Yap',
-                onTap: onSubmit,
-              ),
-
-              const SizedBox(height: 12),
-
-              TextButton(
-                onPressed: loading ? null : onToggleMode,
-                child: Text(
-                  isRegister
-                      ? 'Zaten hesabın var mı? Giriş yap'
-                      : 'Hesabın yok mu? Kayıt ol',
-                  textScaler: TextScaler.noScaling,
-                  style: const TextStyle(
-                    fontFamily: 'Roboto',
-                    fontWeight: FontWeight.w900,
-                    color: Colors.black,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
+          SizedBox(height: small ? 8 : 14),
+        ],
       ),
     );
   }
 }
 
-class _GoogleButton extends StatelessWidget {
+class _LoginPage extends StatelessWidget {
   final bool loading;
-  final VoidCallback onTap;
+  final AnimationController floatController;
+  final AnimationController iconController;
+  final VoidCallback onGoogleTap;
+  final VoidCallback onAppleTap;
 
-  const _GoogleButton({
+  const _LoginPage({
     required this.loading,
-    required this.onTap,
+    required this.floatController,
+    required this.iconController,
+    required this.onGoogleTap,
+    required this.onAppleTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 58,
-      width: double.infinity,
-      child: OutlinedButton(
-        onPressed: loading ? null : onTap,
-        style: OutlinedButton.styleFrom(
-          foregroundColor: Colors.black,
-          side: BorderSide(color: Colors.black.withOpacity(0.10)),
-          backgroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(19),
-          ),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Image.asset(
-              'assets/images/google.png',
-              width: 23,
-              height: 23,
-            ),
-            const SizedBox(width: 10),
-            const Text(
-              'Google ile giriş yap',
-              textScaler: TextScaler.noScaling,
-              style: TextStyle(
-                fontFamily: 'Roboto',
-                fontWeight: FontWeight.w900,
-                fontSize: 15,
+    final height = MediaQuery.sizeOf(context).height;
+    final small = height < 680;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
+      child: Column(
+        children: [
+          Expanded(
+            child: Center(
+              child: AnimatedBuilder(
+                animation: Listenable.merge([floatController, iconController]),
+                builder: (context, _) {
+                  final y = math.sin(floatController.value * math.pi) * -10;
+                  return Transform.translate(
+                    offset: Offset(0, y),
+                    child: _LoginOrb(
+                      controller: iconController,
+                      size: small ? 230 : 286,
+                    ),
+                  );
+                },
               ),
+            ),
+          ),
+          Text(
+            'NOVA’ya giriş yap',
+            textScaler: TextScaler.noScaling,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              fontSize: small ? 24 : 27,
+              fontWeight: FontWeight.w900,
+              letterSpacing: -0.4,
+              color: Colors.black,
+            ),
+          ),
+          SizedBox(height: small ? 18 : 24),
+          _NeonSocialButton(
+            text: 'Google ile devam et',
+            iconAsset: 'assets/images/google.png',
+            fallbackIcon: Icons.g_mobiledata_rounded,
+            loading: loading,
+            onTap: onGoogleTap,
+          ),
+          const SizedBox(height: 12),
+          _NeonSocialButton(
+            text: 'Apple ile devam et',
+            fallbackIcon: Icons.apple_rounded,
+            loading: false,
+            muted: true,
+            onTap: onAppleTap,
+          ),
+          SizedBox(height: small ? 10 : 18),
+        ],
+      ),
+    );
+  }
+}
+
+class _BottomControls extends StatelessWidget {
+  final int currentPage;
+  final int totalPages;
+  final bool isLoginPage;
+  final VoidCallback onBack;
+  final VoidCallback onNext;
+  final VoidCallback onSkip;
+
+  const _BottomControls({
+    required this.currentPage,
+    required this.totalPages,
+    required this.isLoginPage,
+    required this.onBack,
+    required this.onNext,
+    required this.onSkip,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 0, 18, 14),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(totalPages, (index) {
+                final active = index == currentPage;
+                return AnimatedContainer(
+                  duration: const Duration(milliseconds: 250),
+                  curve: Curves.easeOutCubic,
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  width: active ? 24 : 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(99),
+                    gradient: active
+                        ? const LinearGradient(
+                      colors: [
+                        Color(0xFF00D9FF),
+                        Color(0xFF3C7BFF),
+                        Color(0xFFFF00B8),
+                      ],
+                    )
+                        : null,
+                    color: active ? null : Colors.black.withOpacity(0.15),
+                  ),
+                );
+              }),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                SizedBox(
+                  width: 86,
+                  child: TextButton(
+                    onPressed: isLoginPage ? null : onSkip,
+                    child: Text(
+                      isLoginPage ? '' : 'Atla',
+                      textScaler: TextScaler.noScaling,
+                      style: const TextStyle(
+                        fontFamily: 'Roboto',
+                        fontWeight: FontWeight.w900,
+                        color: Colors.black54,
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: Center(
+                    child: currentPage > 0
+                        ? _SmallNeonButton(text: 'Geri', onTap: onBack)
+                        : const SizedBox(height: 44),
+                  ),
+                ),
+                SizedBox(
+                  width: 86,
+                  child: isLoginPage
+                      ? const SizedBox.shrink()
+                      : TextButton(
+                    onPressed: onNext,
+                    child: const Text(
+                      'İleri',
+                      textScaler: TextScaler.noScaling,
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        fontWeight: FontWeight.w900,
+                        color: Colors.black,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -772,152 +897,65 @@ class _GoogleButton extends StatelessWidget {
   }
 }
 
-class _DividerText extends StatelessWidget {
-  final String text;
-
-  const _DividerText({
-    required this.text,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(child: Divider(color: Colors.black.withOpacity(0.10))),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          child: Text(
-            text,
-            textScaler: TextScaler.noScaling,
-            style: const TextStyle(
-              fontFamily: 'Roboto',
-              color: Colors.black38,
-              fontWeight: FontWeight.w800,
-              fontSize: 12,
-            ),
-          ),
-        ),
-        Expanded(child: Divider(color: Colors.black.withOpacity(0.10))),
-      ],
-    );
-  }
-}
-
-class _CityDropdown extends StatelessWidget {
-  final String? value;
-  final List<String> cities;
-  final ValueChanged<String?> onChanged;
-
-  const _CityDropdown({
-    required this.value,
-    required this.cities,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return DropdownButtonFormField<String>(
-      value: value,
-      isExpanded: true,
-      dropdownColor: Colors.white,
-      icon: const Icon(Icons.keyboard_arrow_down_rounded),
-      decoration: InputDecoration(
-        labelText: 'İl Seç',
-        labelStyle: const TextStyle(
-          fontFamily: 'Roboto',
-          fontWeight: FontWeight.w700,
-          color: Colors.black45,
-        ),
-        prefixIcon: const Icon(Icons.location_city_rounded),
-        filled: true,
-        fillColor: Colors.white.withOpacity(0.88),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: BorderSide(color: Colors.black.withOpacity(0.08)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: Color(0xFFFF00B8), width: 1.4),
-        ),
-      ),
-      items: cities.map((city) {
-        return DropdownMenuItem(
-          value: city,
-          child: Text(
-            city,
-            textScaler: TextScaler.noScaling,
-            style: const TextStyle(
-              fontFamily: 'Roboto',
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        );
-      }).toList(),
-      onChanged: onChanged,
-    );
-  }
-}
-
-class _NovaInput extends StatelessWidget {
-  final TextEditingController controller;
-  final String label;
-  final IconData icon;
-  final bool obscureText;
-  final TextInputType keyboardType;
-  final Widget? suffix;
-
-  const _NovaInput({
-    required this.controller,
-    required this.label,
-    required this.icon,
-    this.obscureText = false,
-    this.keyboardType = TextInputType.text,
-    this.suffix,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      obscureText: obscureText,
-      keyboardType: keyboardType,
-      style: const TextStyle(
-        fontFamily: 'Roboto',
-        color: Colors.black,
-        fontWeight: FontWeight.w800,
-      ),
-      decoration: InputDecoration(
-        labelText: label,
-        labelStyle: const TextStyle(
-          fontFamily: 'Roboto',
-          fontWeight: FontWeight.w700,
-          color: Colors.black45,
-        ),
-        prefixIcon: Icon(icon, color: Colors.black54),
-        suffixIcon: suffix,
-        filled: true,
-        fillColor: Colors.white.withOpacity(0.88),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: BorderSide(color: Colors.black.withOpacity(0.08)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: Color(0xFFFF00B8), width: 1.4),
-        ),
-      ),
-    );
-  }
-}
-
-class _PrimaryButton extends StatelessWidget {
-  final bool loading;
+class _SmallNeonButton extends StatelessWidget {
   final String text;
   final VoidCallback onTap;
 
-  const _PrimaryButton({
-    required this.loading,
+  const _SmallNeonButton({required this.text, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(99),
+      onTap: onTap,
+      child: Container(
+        height: 44,
+        padding: const EdgeInsets.symmetric(horizontal: 28),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(99),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF00D9FF).withOpacity(0.14),
+              blurRadius: 16,
+              offset: const Offset(0, 7),
+            ),
+            BoxShadow(
+              color: const Color(0xFFFF00B8).withOpacity(0.09),
+              blurRadius: 14,
+              offset: const Offset(0, -4),
+            ),
+          ],
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          text,
+          textScaler: TextScaler.noScaling,
+          style: const TextStyle(
+            fontFamily: 'Roboto',
+            fontWeight: FontWeight.w900,
+            color: Colors.black,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NeonSocialButton extends StatelessWidget {
+  final String text;
+  final String? iconAsset;
+  final IconData fallbackIcon;
+  final bool loading;
+  final bool muted;
+  final VoidCallback onTap;
+
+  const _NeonSocialButton({
     required this.text,
+    this.iconAsset,
+    required this.fallbackIcon,
+    required this.loading,
+    this.muted = false,
     required this.onTap,
   });
 
@@ -928,7 +966,7 @@ class _PrimaryButton extends StatelessWidget {
       width: double.infinity,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(19),
+          borderRadius: BorderRadius.circular(20),
           gradient: const LinearGradient(
             colors: [
               Color(0xFF00D9FF),
@@ -937,45 +975,511 @@ class _PrimaryButton extends StatelessWidget {
               Color(0xFFFF7A00),
             ],
           ),
-          boxShadow: [
+          boxShadow: muted
+              ? [
             BoxShadow(
-              color: const Color(0xFFFF00B8).withOpacity(0.26),
-              blurRadius: 20,
+              color: Colors.black.withOpacity(0.07),
+              blurRadius: 14,
+              offset: const Offset(0, 7),
+            ),
+          ]
+              : [
+            BoxShadow(
+              color: const Color(0xFFFF00B8).withOpacity(0.20),
+              blurRadius: 22,
               offset: const Offset(0, 10),
+            ),
+            BoxShadow(
+              color: const Color(0xFF00D9FF).withOpacity(0.15),
+              blurRadius: 20,
+              offset: const Offset(0, -5),
             ),
           ],
         ),
-        child: ElevatedButton(
-          onPressed: loading ? null : onTap,
-          style: ElevatedButton.styleFrom(
-            elevation: 0,
-            backgroundColor: Colors.transparent,
-            disabledBackgroundColor: Colors.black12,
-            shadowColor: Colors.transparent,
-            foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(19),
+        child: Padding(
+          padding: const EdgeInsets.all(1.6),
+          child: ElevatedButton(
+            onPressed: loading ? null : onTap,
+            style: ElevatedButton.styleFrom(
+              elevation: 0,
+              shadowColor: Colors.transparent,
+              backgroundColor: Colors.white,
+              disabledBackgroundColor: Colors.white,
+              foregroundColor: Colors.black,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
             ),
-          ),
-          child: loading
-              ? const SizedBox(
-            width: 22,
-            height: 22,
-            child: CircularProgressIndicator(
-              strokeWidth: 2.4,
-              color: Colors.white,
-            ),
-          )
-              : Text(
-            text,
-            textScaler: TextScaler.noScaling,
-            style: const TextStyle(
-              fontFamily: 'Roboto',
-              fontSize: 16,
-              fontWeight: FontWeight.w900,
+            child: loading
+                ? const SizedBox(
+              width: 23,
+              height: 23,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.4,
+                color: Colors.black,
+              ),
+            )
+                : Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (iconAsset != null)
+                  Image.asset(
+                    iconAsset!,
+                    width: 24,
+                    height: 24,
+                    errorBuilder: (context, error, stackTrace) {
+                      return Icon(fallbackIcon, size: 30, color: Colors.black);
+                    },
+                  )
+                else
+                  Icon(fallbackIcon, size: 28, color: Colors.black),
+                const SizedBox(width: 11),
+                Text(
+                  text,
+                  textScaler: TextScaler.noScaling,
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    fontSize: 15.5,
+                    fontWeight: FontWeight.w900,
+                    color: muted ? Colors.black.withOpacity(0.78) : Colors.black,
+                  ),
+                ),
+              ],
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _SoftWelcomeBackground extends StatelessWidget {
+  final AnimationController controller;
+
+  const _SoftWelcomeBackground({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        return CustomPaint(
+          painter: _SoftWelcomePainter(value: controller.value),
+        );
+      },
+    );
+  }
+}
+
+class _SoftWelcomePainter extends CustomPainter {
+  final double value;
+
+  const _SoftWelcomePainter({required this.value});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Offset.zero & size, Paint()..color = Colors.white);
+
+    final t = value * math.pi * 2;
+
+    void blob(Offset center, double radius, Color color, double opacity) {
+      final safeOpacity = opacity.clamp(0.0, 1.0);
+      final paint = Paint()
+        ..shader = RadialGradient(
+          colors: [
+            color.withOpacity(safeOpacity),
+            color.withOpacity((safeOpacity * 0.42).clamp(0.0, 1.0)),
+            color.withOpacity(0),
+          ],
+        ).createShader(Rect.fromCircle(center: center, radius: radius));
+      canvas.drawCircle(center, radius, paint);
+    }
+
+    blob(
+      Offset(size.width * (0.12 + math.sin(t) * 0.03), size.height * 0.22),
+      210,
+      const Color(0xFF00D9FF),
+      0.18,
+    );
+    blob(
+      Offset(size.width * (0.88 + math.cos(t) * 0.03), size.height * 0.35),
+      230,
+      const Color(0xFFFF00B8),
+      0.15,
+    );
+    blob(
+      Offset(size.width * 0.50, size.height * (0.82 + math.sin(t * 0.8) * 0.02)),
+      260,
+      const Color(0xFFFF7A00),
+      0.10,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _SoftWelcomePainter oldDelegate) {
+    return oldDelegate.value != value;
+  }
+}
+
+class _NovaAnimatedBackground extends StatelessWidget {
+  final AnimationController controller;
+
+  const _NovaAnimatedBackground({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        return CustomPaint(
+          painter: _NovaBackgroundPainter(value: controller.value),
+        );
+      },
+    );
+  }
+}
+
+class _NovaBackgroundPainter extends CustomPainter {
+  final double value;
+
+  const _NovaBackgroundPainter({required this.value});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Offset.zero & size, Paint()..color = Colors.white);
+
+    final t = value * math.pi * 2;
+
+    void drawBlob(Offset center, double radius, Color color, double opacity) {
+      final safeOpacity = opacity.clamp(0.0, 1.0);
+      final paint = Paint()
+        ..shader = RadialGradient(
+          colors: [
+            color.withOpacity(safeOpacity),
+            color.withOpacity((safeOpacity * 0.45).clamp(0.0, 1.0)),
+            color.withOpacity(0.0),
+          ],
+          stops: const [0.0, 0.42, 1.0],
+        ).createShader(Rect.fromCircle(center: center, radius: radius));
+      canvas.drawCircle(center, radius, paint);
+    }
+
+    drawBlob(
+      Offset(
+        size.width * (0.12 + math.sin(t) * 0.035),
+        size.height * (0.19 + math.cos(t * 0.8) * 0.025),
+      ),
+      210,
+      const Color(0xFF00D9FF),
+      0.16,
+    );
+
+    drawBlob(
+      Offset(
+        size.width * (0.88 + math.cos(t * 0.9) * 0.035),
+        size.height * (0.31 + math.sin(t * 0.7) * 0.026),
+      ),
+      230,
+      const Color(0xFFFF00B8),
+      0.14,
+    );
+
+    drawBlob(
+      Offset(
+        size.width * (0.52 + math.sin(t * 0.65) * 0.04),
+        size.height * (0.86 + math.cos(t * 0.55) * 0.025),
+      ),
+      260,
+      const Color(0xFFFF7A00),
+      0.10,
+    );
+
+    drawBlob(
+      Offset(
+        size.width * (0.18 + math.cos(t * 0.7) * 0.035),
+        size.height * (0.78 + math.sin(t * 0.9) * 0.025),
+      ),
+      200,
+      const Color(0xFF3C7BFF),
+      0.10,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _NovaBackgroundPainter oldDelegate) {
+    return oldDelegate.value != value;
+  }
+}
+
+class _AnimatedIconStage extends StatelessWidget {
+  final IconData icon;
+  final IconData secondIcon;
+  final List<IconData> miniIcons;
+  final AnimationController controller;
+  final int index;
+  final double size;
+
+  const _AnimatedIconStage({
+    required this.icon,
+    required this.secondIcon,
+    required this.miniIcons,
+    required this.controller,
+    required this.index,
+    required this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final rotation = controller.value * math.pi * 2;
+    final colors = [
+      const Color(0xFF00D9FF),
+      const Color(0xFF3C7BFF),
+      const Color(0xFFFF00B8),
+      const Color(0xFFFF7A00),
+    ];
+
+    final big = size * 0.85;
+    final inner = size * 0.75;
+    final core = size * 0.61;
+    final center = size / 2;
+
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Transform.rotate(
+            angle: rotation * 0.16,
+            child: Container(
+              width: big,
+              height: big,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: const SweepGradient(
+                  colors: [
+                    Color(0xFF00D9FF),
+                    Color(0xFF3C7BFF),
+                    Color(0xFFFF00B8),
+                    Color(0xFFFF7A00),
+                    Color(0xFF00D9FF),
+                  ],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFFFF00B8).withOpacity(0.16),
+                    blurRadius: 26,
+                    spreadRadius: 1,
+                  ),
+                  BoxShadow(
+                    color: const Color(0xFF00D9FF).withOpacity(0.12),
+                    blurRadius: 24,
+                    offset: const Offset(0, -5),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Container(
+            width: inner,
+            height: inner,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              shape: BoxShape.circle,
+            ),
+          ),
+          Container(
+            width: core,
+            height: core,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.black.withOpacity(0.05), width: 1),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 20,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+              gradient: RadialGradient(
+                colors: [
+                  colors[index % colors.length].withOpacity(0.12),
+                  Colors.white,
+                ],
+              ),
+            ),
+            child: Icon(icon, size: size * 0.29, color: Colors.black),
+          ),
+          Positioned(
+            right: size * 0.15 + math.sin(rotation) * 4,
+            top: size * 0.15 + math.cos(rotation) * 4,
+            child: _FloatingMiniIcon(
+              icon: secondIcon,
+              color: colors[(index + 1) % colors.length],
+              size: size * 0.19,
+            ),
+          ),
+          ...List.generate(miniIcons.length, (i) {
+            final angle = rotation + (i * math.pi * 2 / miniIcons.length) + index;
+            final radius = size * 0.39;
+            final mini = size * 0.16;
+            return Positioned(
+              left: center + math.cos(angle) * radius - mini / 2,
+              top: center + math.sin(angle) * radius - mini / 2,
+              child: _FloatingMiniIcon(
+                icon: miniIcons[i],
+                color: colors[(i + index) % colors.length],
+                size: mini,
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+}
+
+class _FloatingMiniIcon extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final double size;
+
+  const _FloatingMiniIcon({
+    required this.icon,
+    required this.color,
+    required this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(
+            color: color.withOpacity(0.24),
+            blurRadius: 16,
+            offset: const Offset(0, 7),
+          ),
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 12,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Icon(icon, color: Colors.black, size: size * 0.48),
+    );
+  }
+}
+
+class _LoginOrb extends StatelessWidget {
+  final AnimationController controller;
+  final double size;
+
+  const _LoginOrb({
+    required this.controller,
+    required this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final rotation = controller.value * math.pi * 2;
+
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Transform.rotate(
+            angle: rotation * 0.2,
+            child: Container(
+              width: size * 0.86,
+              height: size * 0.86,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: const SweepGradient(
+                  colors: [
+                    Color(0xFFFF00B8),
+                    Color(0xFF3C7BFF),
+                    Color(0xFF00D9FF),
+                    Color(0xFFFF7A00),
+                    Color(0xFFFF00B8),
+                  ],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFFFF00B8).withOpacity(0.18),
+                    blurRadius: 30,
+                    offset: const Offset(0, 14),
+                  ),
+                  BoxShadow(
+                    color: const Color(0xFF00D9FF).withOpacity(0.13),
+                    blurRadius: 24,
+                    offset: const Offset(0, -7),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Container(
+            width: size * 0.75,
+            height: size * 0.75,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              shape: BoxShape.circle,
+            ),
+          ),
+          Container(
+            width: size * 0.61,
+            height: size * 0.61,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.06),
+                  blurRadius: 20,
+                  offset: const Offset(0, 9),
+                ),
+              ],
+            ),
+            child: Icon(
+              Icons.verified_user_rounded,
+              size: size * 0.29,
+              color: Colors.black,
+            ),
+          ),
+          Positioned(
+            top: size * 0.12 + math.sin(rotation) * 5,
+            right: size * 0.17 + math.cos(rotation) * 5,
+            child: _FloatingMiniIcon(
+              icon: Icons.g_mobiledata_rounded,
+              color: const Color(0xFF00D9FF),
+              size: size * 0.20,
+            ),
+          ),
+          Positioned(
+            bottom: size * 0.15 + math.cos(rotation) * 5,
+            left: size * 0.17 + math.sin(rotation) * 5,
+            child: _FloatingMiniIcon(
+              icon: Icons.apple_rounded,
+              color: const Color(0xFFFF00B8),
+              size: size * 0.19,
+            ),
+          ),
+          Positioned(
+            bottom: size * 0.20 + math.sin(rotation) * 4,
+            right: size * 0.13 + math.cos(rotation) * 4,
+            child: _FloatingMiniIcon(
+              icon: Icons.lock_rounded,
+              color: const Color(0xFFFF7A00),
+              size: size * 0.16,
+            ),
+          ),
+        ],
       ),
     );
   }

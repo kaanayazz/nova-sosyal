@@ -3001,7 +3001,7 @@ class StoriesRow extends StatelessWidget {
                                   ],
                                 ),
                               ),
-                              child: StoryAvatar(image: story.profileImage),
+                              child: StoryAvatar(ownerId: story.ownerId, image: story.profileImage),
                             );
                           },
                         )
@@ -3014,7 +3014,7 @@ class StoriesRow extends StatelessWidget {
                             color: viewed ? Colors.black12 : Colors.black,
                             shape: BoxShape.circle,
                           ),
-                          child: StoryAvatar(image: story.profileImage),
+                          child: StoryAvatar(ownerId: story.ownerId, image: story.profileImage),
                         ),
                       if (isMe)
                         Positioned(
@@ -3151,12 +3151,46 @@ class TowStoryShortcut extends StatelessWidget {
 }
 
 class StoryAvatar extends StatelessWidget {
+  final String ownerId;
   final String image;
 
   const StoryAvatar({
     super.key,
+    required this.ownerId,
     required this.image,
   });
+
+  String _liveProfileImage(Map<String, dynamic>? data) {
+    return _safeString(
+      data?['photoUrl'] ??
+          data?['userPhoto'] ??
+          data?['profileImage'] ??
+          data?['profileImageUrl'] ??
+          data?['avatarUrl'],
+      fallback: image,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (ownerId.trim().isEmpty) {
+      return _StoryAvatarImage(image: image);
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance.collection('users').doc(ownerId).snapshots(),
+      builder: (context, snapshot) {
+        final liveImage = _liveProfileImage(snapshot.data?.data());
+        return _StoryAvatarImage(image: liveImage);
+      },
+    );
+  }
+}
+
+class _StoryAvatarImage extends StatelessWidget {
+  final String image;
+
+  const _StoryAvatarImage({required this.image});
 
   @override
   Widget build(BuildContext context) {
@@ -3173,6 +3207,61 @@ class StoryAvatar extends StatelessWidget {
         backgroundImage: hasImage ? NetworkImage(image) : null,
         child: hasImage ? null : const Icon(Icons.person_rounded, color: Colors.black54),
       ),
+    );
+  }
+}
+
+class LiveStoryProfileAvatar extends StatelessWidget {
+  final String ownerId;
+  final String fallbackImage;
+  final double radius;
+  final Color backgroundColor;
+  final Color iconColor;
+
+  const LiveStoryProfileAvatar({
+    super.key,
+    required this.ownerId,
+    required this.fallbackImage,
+    this.radius = 21,
+    this.backgroundColor = Colors.black,
+    this.iconColor = Colors.white,
+  });
+
+  String _liveProfileImage(Map<String, dynamic>? data) {
+    return _safeString(
+      data?['photoUrl'] ??
+          data?['userPhoto'] ??
+          data?['profileImage'] ??
+          data?['profileImageUrl'] ??
+          data?['avatarUrl'],
+      fallback: fallbackImage,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (ownerId.trim().isEmpty) {
+      final hasImage = fallbackImage.trim().isNotEmpty;
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: backgroundColor,
+        backgroundImage: hasImage ? NetworkImage(fallbackImage) : null,
+        child: hasImage ? null : Icon(Icons.person_rounded, color: iconColor),
+      );
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance.collection('users').doc(ownerId).snapshots(),
+      builder: (context, snapshot) {
+        final image = _liveProfileImage(snapshot.data?.data());
+        final hasImage = image.trim().isNotEmpty;
+        return CircleAvatar(
+          radius: radius,
+          backgroundColor: backgroundColor,
+          backgroundImage: hasImage ? NetworkImage(image) : null,
+          child: hasImage ? null : Icon(Icons.person_rounded, color: iconColor),
+        );
+      },
     );
   }
 }
@@ -4273,9 +4362,10 @@ class _FullScreenStoryPageState extends State<FullScreenStoryPage> with SingleTi
                             progressController.stop();
                             widget.onProfileTap(story.ownerId);
                           },
-                          child: CircleAvatar(
+                          child: LiveStoryProfileAvatar(
+                            ownerId: story.ownerId,
+                            fallbackImage: story.profileImage,
                             radius: 21,
-                            backgroundImage: story.profileImage.isEmpty ? null : NetworkImage(story.profileImage),
                           ),
                         ),
                         const SizedBox(width: 10),
@@ -4614,13 +4704,12 @@ class _MyStoryViewerPageState extends State<MyStoryViewerPage> with SingleTicker
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     child: Row(
                       children: [
-                        CircleAvatar(
+                        LiveStoryProfileAvatar(
+                          ownerId: story.ownerId,
+                          fallbackImage: story.profileImage,
                           radius: 21,
                           backgroundColor: Colors.white,
-                          backgroundImage: story.profileImage.isEmpty ? null : NetworkImage(story.profileImage),
-                          child: story.profileImage.isEmpty
-                              ? const Icon(Icons.person_rounded, color: Colors.black)
-                              : null,
+                          iconColor: Colors.black,
                         ),
                         const SizedBox(width: 10),
                         const Text(

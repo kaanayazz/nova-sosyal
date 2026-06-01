@@ -1,13 +1,15 @@
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
-import 'package:image_cropper/image_cropper.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -22,243 +24,80 @@ enum PostVisibility { explore, followers }
 
 class _CreatePostPageState extends State<CreatePostPage>
     with SingleTickerProviderStateMixin {
-  late final AnimationController neonController;
+  late final AnimationController _neonController;
 
-  final ImagePicker picker = ImagePicker();
+  final ImagePicker _picker = ImagePicker();
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   final FirebaseStorage _storage = FirebaseStorage.instance;
 
-  final TextEditingController captionController = TextEditingController();
+  final TextEditingController _captionController = TextEditingController();
 
-  final List<File> selectedImageFiles = <File>[];
   static const int maxPostImages = 5;
-  PostVisibility selectedVisibility = PostVisibility.explore;
-
-  bool isSharing = false;
-  double uploadProgress = 0;
-
-  String lockedProfileLocation = '';
-  bool profileLocationLoading = true;
-
   static const int captionLimit = 300;
 
-  String get currentUid => _auth.currentUser?.uid ?? '';
+  final List<File> _selectedImages = <File>[];
+
+  PostVisibility _visibility = PostVisibility.explore;
+
+  bool _isSharing = false;
+  bool _profileLoading = true;
+  double _uploadProgress = 0;
+
+  String _lockedLocation = '';
+
+  User? get _user => _auth.currentUser;
 
   @override
   void initState() {
     super.initState();
-
-    neonController = AnimationController(
+    _neonController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 3),
     )..repeat();
-
-    captionController.addListener(_refresh);
-    _loadLockedProfileLocation();
+    _captionController.addListener(_refresh);
+    _loadProfileLocation();
   }
 
   void _refresh() {
     if (mounted) setState(() {});
   }
 
-  Future<void> _loadLockedProfileLocation() async {
-    final uid = currentUid;
+  @override
+  void dispose() {
+    _neonController.dispose();
+    _captionController.removeListener(_refresh);
+    _captionController.dispose();
+    super.dispose();
+  }
 
-    if (uid.isEmpty) {
-      if (mounted) {
-        setState(() {
-          lockedProfileLocation = '';
-          profileLocationLoading = false;
-        });
-      }
+  Future<void> _loadProfileLocation() async {
+    final user = _user;
+    if (user == null) {
+      if (!mounted) return;
+      setState(() {
+        _profileLoading = false;
+        _lockedLocation = '';
+      });
       return;
     }
 
     try {
-      final snap = await _db.collection('users').doc(uid).get();
+      final snap = await _db.collection('users').doc(user.uid).get();
       final data = snap.data() ?? <String, dynamic>{};
       final location = _profileLocation(data);
 
       if (!mounted) return;
       setState(() {
-        lockedProfileLocation = location;
-        profileLocationLoading = false;
+        _lockedLocation = location;
+        _profileLoading = false;
       });
     } catch (_) {
       if (!mounted) return;
       setState(() {
-        lockedProfileLocation = '';
-        profileLocationLoading = false;
+        _lockedLocation = '';
+        _profileLoading = false;
       });
-    }
-  }
-
-  @override
-  void dispose() {
-    neonController.dispose();
-    captionController.removeListener(_refresh);
-    captionController.dispose();
-    super.dispose();
-  }
-
-  Future<void> pickImageFromGallery() async {
-    if (isSharing) return;
-
-    final int remaining = maxPostImages - selectedImageFiles.length;
-    if (remaining <= 0) {
-      showMessage('En fazla 5 fotoğraf seçebilirsin.');
-      return;
-    }
-
-    try {
-      final List<XFile> pickedFiles = await picker.pickMultiImage(
-        imageQuality: 95,
-        limit: remaining,
-      );
-
-      if (pickedFiles.isEmpty || !mounted) return;
-
-      final List<XFile> limitedFiles = pickedFiles.take(remaining).toList();
-      final List<File> readyFiles = <File>[];
-
-      for (final XFile picked in limitedFiles) {
-        final File jpgFile = await convertImageToJpg(File(picked.path));
-        readyFiles.add(jpgFile);
-      }
-
-      if (!mounted) return;
-      setState(() {
-        selectedImageFiles.addAll(readyFiles);
-      });
-
-      if (pickedFiles.length > remaining) {
-        showMessage('En fazla 5 fotoğraf seçilebilir. Fazla fotoğraflar eklenmedi.');
-      }
-    } catch (e) {
-      showMessage('Görsel seçilirken hata oluştu: $e');
-    }
-  }
-
-  Future<void> cropImage({required String imagePath, int? index}) async {
-    if (isSharing) return;
-
-    try {
-      final CroppedFile? croppedFile = await ImageCropper().cropImage(
-        sourcePath: imagePath,
-        compressFormat: ImageCompressFormat.jpg,
-        compressQuality: 95,
-        maxWidth: 1080,
-        maxHeight: 1080,
-        aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
-        uiSettings: [
-          AndroidUiSettings(
-            toolbarTitle: '1080 x 1080 Post Görseli',
-            toolbarColor: Colors.black,
-            toolbarWidgetColor: Colors.white,
-            activeControlsWidgetColor: Colors.black,
-            initAspectRatio: CropAspectRatioPreset.square,
-            lockAspectRatio: true,
-            hideBottomControls: false,
-          ),
-          IOSUiSettings(
-            title: '1080 x 1080 Post Görseli',
-            doneButtonTitle: 'Tamam',
-            cancelButtonTitle: 'İptal',
-            aspectRatioLockEnabled: true,
-            resetAspectRatioEnabled: false,
-          ),
-        ],
-      );
-
-      if (croppedFile == null || !mounted) return;
-
-      final File jpgFile = await convertImageToJpg(File(croppedFile.path));
-      if (!mounted) return;
-
-      setState(() {
-        if (index != null && index >= 0 && index < selectedImageFiles.length) {
-          selectedImageFiles[index] = jpgFile;
-        } else if (selectedImageFiles.length < maxPostImages) {
-          selectedImageFiles.add(jpgFile);
-        }
-      });
-    } catch (e) {
-      showMessage('Kırpma ekranı açılamadı: $e');
-    }
-  }
-
-  Future<void> editSelectedImage(int index) async {
-    if (isSharing) return;
-    if (index < 0 || index >= selectedImageFiles.length) return;
-    await cropImage(imagePath: selectedImageFiles[index].path, index: index);
-  }
-
-  Future<File> convertImageToJpg(File file) async {
-    final Uint8List bytes = await file.readAsBytes();
-    final img.Image? decodedImage = img.decodeImage(bytes);
-
-    if (decodedImage == null) return file;
-
-    final Directory tempDir = await getTemporaryDirectory();
-    final String jpgPath =
-        '${tempDir.path}/nova_post_${DateTime.now().millisecondsSinceEpoch}.jpg';
-
-    final img.Image squareImage = img.copyResizeCropSquare(
-      decodedImage,
-      size: 1080,
-    );
-
-    final File jpgFile = File(jpgPath);
-    await jpgFile.writeAsBytes(
-      img.encodeJpg(squareImage, quality: 95),
-      flush: true,
-    );
-
-    return jpgFile;
-  }
-
-  void removeImage(int index) {
-    if (isSharing) return;
-    if (index < 0 || index >= selectedImageFiles.length) return;
-    setState(() => selectedImageFiles.removeAt(index));
-  }
-
-  void showMessage(String message) {
-    if (!mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-  String _visibilityValue() {
-    switch (selectedVisibility) {
-      case PostVisibility.followers:
-        return 'followers';
-      case PostVisibility.explore:
-        return 'public';
-    }
-  }
-
-  String _visibilityText() {
-    switch (selectedVisibility) {
-      case PostVisibility.followers:
-        return 'Takipçilerin';
-      case PostVisibility.explore:
-        return 'NOVA Keşfet';
-    }
-  }
-
-  String _feedTarget() {
-    switch (selectedVisibility) {
-      case PostVisibility.followers:
-        return 'following';
-      case PostVisibility.explore:
-        return 'explore';
     }
   }
 
@@ -268,12 +107,10 @@ class _CreatePostPageState extends State<CreatePostPage>
     return text.isEmpty ? fallback : text;
   }
 
-  String _profileLocation(Map<String, dynamic> userData) {
-    final city = _safeString(
-      userData['city'] ?? userData['il'] ?? userData['province'],
-    );
+  String _profileLocation(Map<String, dynamic> data) {
+    final city = _safeString(data['city'] ?? data['il'] ?? data['province']);
     final district = _safeString(
-      userData['district'] ?? userData['ilce'] ?? userData['ilçe'] ?? userData['county'],
+      data['district'] ?? data['ilce'] ?? data['ilçe'] ?? data['county'],
     );
 
     if (city.isNotEmpty && district.isNotEmpty) return '$city / $district';
@@ -282,62 +119,262 @@ class _CreatePostPageState extends State<CreatePostPage>
     return '';
   }
 
-  Future<void> sharePost() async {
-    if (isSharing) return;
+  String _visibilityValue() {
+    return _visibility == PostVisibility.explore ? 'public' : 'followers';
+  }
 
-    final User? user = _auth.currentUser;
-    final List<File> imageFiles = List<File>.from(selectedImageFiles);
-    final String caption = captionController.text.trim();
+  String _visibilityText() {
+    return _visibility == PostVisibility.explore ? 'NOVA Keşfet' : 'Takipçilerin';
+  }
+
+  String _feedTarget() {
+    return _visibility == PostVisibility.explore ? 'explore' : 'following';
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _pickImage() async {
+    if (_isSharing) return;
+
+    final int remaining = maxPostImages - _selectedImages.length;
+    if (remaining <= 0) {
+      _showMessage('En fazla $maxPostImages fotoğraf seçebilirsin.');
+      return;
+    }
+
+    try {
+      final List<XFile> pickedList = await _picker.pickMultiImage(
+        imageQuality: 100,
+        maxWidth: 3000,
+        maxHeight: 3000,
+        requestFullMetadata: false,
+      );
+
+      if (pickedList.isEmpty || !mounted) return;
+
+      final List<File> sourceFiles = pickedList
+          .take(remaining)
+          .map((xFile) => File(xFile.path))
+          .toList();
+
+      if (pickedList.length > remaining) {
+        _showMessage('En fazla $maxPostImages fotoğraf seçebilirsin. İlk $remaining fotoğraf alındı.');
+      }
+
+      final List<File>? editedFiles = await Navigator.push<List<File>?>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => InstagramBatchImageEditorPage(
+            sourceFiles: sourceFiles,
+            title: 'Fotoğrafları Ayarla',
+          ),
+        ),
+      );
+
+      if (editedFiles == null || editedFiles.isEmpty || !mounted) return;
+
+      final List<File> fixedFiles = <File>[];
+      for (final File editedFile in editedFiles) {
+        final File? fixedFile = await _prepareImage(editedFile);
+        if (fixedFile != null) fixedFiles.add(fixedFile);
+      }
+
+      if (fixedFiles.isEmpty || !mounted) {
+        _showMessage('Fotoğraflar hazırlanamadı. Başka görsel dene.');
+        return;
+      }
+
+      setState(() => _selectedImages.addAll(fixedFiles));
+    } catch (e) {
+      _showMessage('Fotoğraf seçilirken hata oluştu: $e');
+    }
+  }
+
+  Future<void> _changeImage(int index) async {
+    if (_isSharing) return;
+    if (index < 0 || index >= _selectedImages.length) return;
+
+    try {
+      final XFile? picked = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 100,
+        maxWidth: 3000,
+        maxHeight: 3000,
+        requestFullMetadata: false,
+      );
+
+      if (picked == null || !mounted) return;
+
+      final File? editedFile = await Navigator.push<File?>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => InstagramImageEditorPage(
+            sourceFile: File(picked.path),
+            title: 'Fotoğrafı Değiştir',
+          ),
+        ),
+      );
+
+      if (editedFile == null || !mounted) return;
+
+      final File? fixedFile = await _prepareImage(editedFile);
+      if (fixedFile == null || !mounted) {
+        _showMessage('Fotoğraf hazırlanamadı. Başka bir görsel dene.');
+        return;
+      }
+
+      setState(() => _selectedImages[index] = fixedFile);
+    } catch (e) {
+      _showMessage('Fotoğraf değiştirilirken hata oluştu: $e');
+    }
+  }
+
+  Future<void> _editExistingImage(int index) async {
+    if (_isSharing) return;
+    if (index < 0 || index >= _selectedImages.length) return;
+
+    try {
+      final File? editedFile = await Navigator.push<File?>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => InstagramImageEditorPage(
+            sourceFile: _selectedImages[index],
+            title: 'Fotoğrafı Ayarla',
+          ),
+        ),
+      );
+
+      if (editedFile == null || !mounted) return;
+
+      final File? fixedFile = await _prepareImage(editedFile);
+      if (fixedFile == null || !mounted) return;
+
+      setState(() => _selectedImages[index] = fixedFile);
+    } catch (e) {
+      _showMessage('Fotoğraf ayarlanırken hata oluştu: $e');
+    }
+  }
+
+  Future<File?> _prepareImage(File originalFile) async {
+    try {
+      final Uint8List bytes = await originalFile.readAsBytes();
+      img.Image? decoded = img.decodeImage(bytes);
+      if (decoded == null) return null;
+
+      decoded = img.bakeOrientation(decoded);
+
+      const int targetSize = 1080;
+      if (decoded.width != targetSize || decoded.height != targetSize) {
+        decoded = img.copyResizeCropSquare(
+          decoded,
+          size: targetSize,
+          interpolation: img.Interpolation.average,
+        );
+      }
+
+      final Directory tempDir = await getTemporaryDirectory();
+      final String path =
+          '${tempDir.path}/nova_post_${DateTime.now().microsecondsSinceEpoch}.jpg';
+
+      final File jpgFile = File(path);
+      await jpgFile.writeAsBytes(
+        img.encodeJpg(decoded, quality: 92),
+        flush: true,
+      );
+
+      return jpgFile;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _removeImage(int index) {
+    if (_isSharing) return;
+    if (index < 0 || index >= _selectedImages.length) return;
+    setState(() => _selectedImages.removeAt(index));
+  }
+
+  void _moveImageLeft(int index) {
+    if (_isSharing || index <= 0 || index >= _selectedImages.length) return;
+    setState(() {
+      final file = _selectedImages.removeAt(index);
+      _selectedImages.insert(index - 1, file);
+    });
+  }
+
+  void _moveImageRight(int index) {
+    if (_isSharing || index < 0 || index >= _selectedImages.length - 1) return;
+    setState(() {
+      final file = _selectedImages.removeAt(index);
+      _selectedImages.insert(index + 1, file);
+    });
+  }
+
+  Future<void> _sharePost() async {
+    if (_isSharing) return;
+
+    final user = _user;
+    final images = List<File>.from(_selectedImages);
+    final caption = _captionController.text.trim();
 
     if (user == null) {
-      showMessage('Post paylaşmak için giriş yapmalısın.');
+      _showMessage('Post paylaşmak için giriş yapmalısın.');
       return;
     }
 
-    if (imageFiles.isEmpty) {
-      showMessage('Önce galeriden en az bir görsel seçmelisin.');
+    if (images.isEmpty) {
+      _showMessage('Önce en az 1 fotoğraf seçmelisin.');
       return;
     }
 
-    if (imageFiles.length > maxPostImages) {
-      showMessage('En fazla 5 fotoğraf seçebilirsin.');
+    if (images.length > maxPostImages) {
+      _showMessage('En fazla $maxPostImages fotoğraf seçebilirsin.');
       return;
     }
 
     setState(() {
-      isSharing = true;
-      uploadProgress = 0;
+      _isSharing = true;
+      _uploadProgress = 0;
     });
 
     try {
-      final DocumentReference<Map<String, dynamic>> userRef =
-      _db.collection('users').doc(user.uid);
-
-      final DocumentSnapshot<Map<String, dynamic>> userDoc = await userRef.get();
-      final Map<String, dynamic> userData = userDoc.data() ?? <String, dynamic>{};
+      final userRef = _db.collection('users').doc(user.uid);
+      final userDoc = await userRef.get();
+      final userData = userDoc.data() ?? <String, dynamic>{};
 
       final bool profileCompleted = userData['profileCompleted'] == true;
 
-      final String displayName = _safeString(
-        userData['displayName'],
+      final displayName = _safeString(
+        userData['displayName'] ?? userData['name'] ?? userData['fullName'],
         fallback: _safeString(user.displayName),
       );
-
-      final String username = _safeString(userData['username']);
-      final String userPhoto = _safeString(
-        userData['photoUrl'] ?? userData['userPhoto'] ?? userData['profileImage'],
+      final username = _safeString(userData['username']);
+      final userPhoto = _safeString(
+        userData['photoUrl'] ??
+            userData['userPhoto'] ??
+            userData['profileImage'] ??
+            userData['profilePhoto'],
         fallback: _safeString(user.photoURL),
       );
-      final String userEmail = _safeString(
+      final userEmail = _safeString(
         userData['email'],
         fallback: _safeString(user.email),
       );
-      final String userCity = _safeString(userData['city'] ?? userData['il']);
-      final String userDistrict = _safeString(
+      final userCity = _safeString(userData['city'] ?? userData['il']);
+      final userDistrict = _safeString(
         userData['district'] ?? userData['ilce'] ?? userData['ilçe'],
       );
-      final String userBio = _safeString(userData['bio']);
-      final String location = _profileLocation(userData);
+      final userBio = _safeString(userData['bio']);
+      final location = _profileLocation(userData);
 
       if (!userDoc.exists ||
           !profileCompleted ||
@@ -347,79 +384,75 @@ class _CreatePostPageState extends State<CreatePostPage>
           userDistrict.isEmpty) {
         if (!mounted) return;
         setState(() {
-          isSharing = false;
-          uploadProgress = 0;
+          _isSharing = false;
+          _uploadProgress = 0;
         });
-        showMessage('Post paylaşmak için profil bilgilerini tamamlamalısın.');
+        _showMessage('Post paylaşmak için önce profil bilgilerini tamamlamalısın.');
         return;
       }
 
-      final DocumentReference<Map<String, dynamic>> postRef =
-      _db.collection('posts').doc();
+      final postRef = _db.collection('posts').doc();
+      final postId = postRef.id;
 
-      final String postId = postRef.id;
       final List<String> imageUrls = <String>[];
       final List<String> imagePaths = <String>[];
-      int uploadedCount = 0;
 
-      for (int i = 0; i < imageFiles.length; i++) {
-        final File imageFile = imageFiles[i];
-        final String imagePath =
+      int completedUploads = 0;
+
+      for (int i = 0; i < images.length; i++) {
+        final imageFile = images[i];
+        final imagePath =
             'posts/${user.uid}/$postId/${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
 
-        final Reference storageRef = _storage.ref().child(imagePath);
-        final UploadTask uploadTask = storageRef.putFile(
+        final storageRef = _storage.ref().child(imagePath);
+
+        final uploadTask = storageRef.putFile(
           imageFile,
           SettableMetadata(
             contentType: 'image/jpeg',
             customMetadata: {
               'uid': user.uid,
               'postId': postId,
-              'username': username,
-              'displayName': displayName,
-              'type': 'post_image',
               'index': i.toString(),
+              'type': 'post_image',
+              'format': 'instagram_square_1080',
             },
           ),
         );
 
-        uploadTask.snapshotEvents.listen((TaskSnapshot snapshot) {
-          final int total = snapshot.totalBytes;
-          final int transferred = snapshot.bytesTransferred;
+        final sub = uploadTask.snapshotEvents.listen((snapshot) {
+          final total = snapshot.totalBytes;
+          final transferred = snapshot.bytesTransferred;
+          if (total <= 0 || !mounted) return;
 
-          if (total > 0 && mounted) {
-            final double singleProgress = (transferred / total).clamp(0.0, 1.0);
-            setState(() {
-              uploadProgress = ((uploadedCount + singleProgress) / imageFiles.length).clamp(0.0, 1.0);
-            });
-          }
+          final single = (transferred / total).clamp(0.0, 1.0);
+          final all = ((completedUploads + single) / images.length).clamp(0.0, 1.0);
+          setState(() => _uploadProgress = all);
         });
 
-        final TaskSnapshot snapshot = await uploadTask;
-        final String imageUrl = await snapshot.ref.getDownloadURL();
-        imageUrls.add(imageUrl);
-        imagePaths.add(imagePath);
-        uploadedCount++;
+        final snapshot = await uploadTask;
+        await sub.cancel();
 
+        final url = await snapshot.ref.getDownloadURL();
+        imageUrls.add(url);
+        imagePaths.add(imagePath);
+
+        completedUploads++;
         if (mounted) {
           setState(() {
-            uploadProgress = (uploadedCount / imageFiles.length).clamp(0.0, 1.0);
+            _uploadProgress =
+                (completedUploads / images.length).clamp(0.0, 1.0);
           });
         }
       }
 
-      final String firstImageUrl = imageUrls.isEmpty ? '' : imageUrls.first;
-      final String firstImagePath = imagePaths.isEmpty ? '' : imagePaths.first;
-
-      final WriteBatch batch = _db.batch();
+      final batch = _db.batch();
 
       batch.set(postRef, {
         'postId': postId,
-
         'uid': user.uid,
         'userId': user.uid,
         'ownerId': user.uid,
-
         'displayName': displayName,
         'username': username,
         'userPhoto': userPhoto,
@@ -427,9 +460,8 @@ class _CreatePostPageState extends State<CreatePostPage>
         'userCity': userCity,
         'userDistrict': userDistrict,
         'userBio': userBio,
-
-        'imageUrl': firstImageUrl,
-        'imagePath': firstImagePath,
+        'imageUrl': imageUrls.first,
+        'imagePath': imagePaths.first,
         'images': imageUrls,
         'imageUrls': imageUrls,
         'mediaUrls': imageUrls,
@@ -437,23 +469,20 @@ class _CreatePostPageState extends State<CreatePostPage>
         'imageCount': imageUrls.length,
         'mediaType': imageUrls.length > 1 ? 'images' : 'image',
         'imageFormat': 'jpg',
-
+        'imageRatio': '1:1',
+        'imageSize': 1080,
         'caption': caption,
         'desc': caption,
         'description': caption,
-
         'location': location,
         'locationLocked': true,
         'locationSource': 'profile',
-
         'visibility': _visibilityValue(),
         'visibilityText': _visibilityText(),
         'feedTarget': _feedTarget(),
-
         'commentsEnabled': true,
         'likesEnabled': true,
         'locationEnabled': true,
-
         'likeCount': 0,
         'likes': 0,
         'likesCount': 0,
@@ -465,12 +494,10 @@ class _CreatePostPageState extends State<CreatePostPage>
         'likedBy': <String>[],
         'savedBy': <String>[],
         'archivedBy': <String>[],
-
         'active': true,
         'deleted': false,
         'isDeleted': false,
         'isArchived': false,
-
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
@@ -488,28 +515,22 @@ class _CreatePostPageState extends State<CreatePostPage>
 
       if (!mounted) return;
 
-      setState(() {
-        uploadProgress = 1;
-      });
-
-      await showSuccessDialog();
+      setState(() => _uploadProgress = 1);
+      await _showSuccessDialog();
 
       if (!mounted) return;
-
       Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
-
       setState(() {
-        isSharing = false;
-        uploadProgress = 0;
+        _isSharing = false;
+        _uploadProgress = 0;
       });
-
-      showMessage('Post paylaşılırken hata oluştu: $e');
+      _showMessage('Post paylaşılırken hata oluştu: $e');
     }
   }
 
-  Future<void> showSuccessDialog() async {
+  Future<void> _showSuccessDialog() async {
     if (!mounted) return;
 
     await showDialog<void>(
@@ -518,23 +539,16 @@ class _CreatePostPageState extends State<CreatePostPage>
       builder: (dialogContext) {
         return Dialog(
           backgroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(26),
-          ),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(
-                  Icons.verified_rounded,
-                  color: Colors.black,
-                  size: 58,
-                ),
+                const Icon(Icons.verified_rounded, color: Colors.black, size: 58),
                 const SizedBox(height: 12),
                 const Text(
                   'Post Paylaşıldı',
-                  textScaler: TextScaler.noScaling,
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontFamily: 'Roboto',
@@ -545,8 +559,7 @@ class _CreatePostPageState extends State<CreatePostPage>
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'Gönderin başarıyla yüklendi. Tamam dediğinde ana sayfaya döneceksin.',
-                  textScaler: TextScaler.noScaling,
+                  'Gönderin başarıyla yüklendi.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontFamily: 'Roboto',
@@ -566,17 +579,11 @@ class _CreatePostPageState extends State<CreatePostPage>
                       backgroundColor: Colors.black,
                       foregroundColor: Colors.white,
                       elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(17),
-                      ),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(17)),
                     ),
                     child: const Text(
                       'Tamam',
-                      textScaler: TextScaler.noScaling,
-                      style: TextStyle(
-                        fontFamily: 'Roboto',
-                        fontWeight: FontWeight.w900,
-                      ),
+                      style: TextStyle(fontFamily: 'Roboto', fontWeight: FontWeight.w900),
                     ),
                   ),
                 ),
@@ -588,80 +595,588 @@ class _CreatePostPageState extends State<CreatePostPage>
     );
   }
 
+  Future<bool> _confirmExit() async {
+    if (_isSharing) return false;
+    if (_selectedImages.isEmpty && _captionController.text.trim().isEmpty) {
+      return true;
+    }
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+          title: const Text(
+            'Çıkılsın mı?',
+            style: TextStyle(fontFamily: 'Roboto', fontWeight: FontWeight.w900),
+          ),
+          content: const Text(
+            'Seçtiğin fotoğraflar ve yazdığın açıklama silinecek.',
+            style: TextStyle(fontFamily: 'Roboto', fontWeight: FontWeight.w700),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Vazgeç'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.black,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Çık'),
+            ),
+          ],
+        );
+      },
+    );
+
+    return result == true;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final int captionLength = captionController.text.characters.length;
+    final int captionLength = _captionController.text.characters.length;
+
+    return MediaQuery(
+      data: MediaQuery.of(context).copyWith(textScaler: const TextScaler.linear(1)),
+      child: WillPopScope(
+        onWillPop: _confirmExit,
+        child: Scaffold(
+          backgroundColor: Colors.white,
+          body: SafeArea(
+            child: Stack(
+              children: [
+                Column(
+                  children: [
+                    CreatePostHeader(
+                      onBackTap: () async {
+                        final canExit = await _confirmExit();
+                        if (!mounted) return;
+                        if (canExit) Navigator.pop(context);
+                      },
+                    ),
+                    Expanded(
+                      child: ListView(
+                        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                        physics: const ClampingScrollPhysics(),
+                        padding: const EdgeInsets.fromLTRB(14, 14, 14, 118),
+                        children: [
+                          NeonImagePickButton(
+                            controller: _neonController,
+                            isSharing: _isSharing,
+                            selected: _selectedImages.isNotEmpty,
+                            selectedCount: _selectedImages.length,
+                            maxCount: maxPostImages,
+                            onTap: _pickImage,
+                          ),
+                          const SizedBox(height: 8),
+                          const InfoText(
+                            text:
+                            'Instagram gibi: fotoğrafları toplu seç, sağa-sola kaydırarak hepsini kontrol et, sürükle/zoom yap ve Kaydet ile görünen alanları post olarak hazırla.',
+                          ),
+                          if (_selectedImages.isNotEmpty) ...[
+                            const SizedBox(height: 14),
+                            SelectedImagesPreview(
+                              files: _selectedImages,
+                              isSharing: _isSharing,
+                              maxCount: maxPostImages,
+                              onEditTap: _editExistingImage,
+                              onChangeTap: _changeImage,
+                              onRemoveTap: _removeImage,
+                              onMoveLeft: _moveImageLeft,
+                              onMoveRight: _moveImageRight,
+                            ),
+                          ],
+                          const SizedBox(height: 14),
+                          LockedLocationBox(location: _lockedLocation, loading: _profileLoading),
+                          const SizedBox(height: 14),
+                          CaptionInputBox(
+                            controller: _captionController,
+                            limit: captionLimit,
+                            currentLength: captionLength,
+                          ),
+                          const SizedBox(height: 14),
+                          VisibilitySelectorBox(
+                            selectedVisibility: _visibility,
+                            enabled: !_isSharing,
+                            onChanged: (value) {
+                              if (_isSharing) return;
+                              setState(() => _visibility = value);
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                    BottomPublishBar(
+                      isSharing: _isSharing,
+                      hasImage: _selectedImages.isNotEmpty,
+                      progress: _uploadProgress,
+                      onShareTap: _sharePost,
+                    ),
+                  ],
+                ),
+                if (_isSharing) UploadLoadingOverlay(progress: _uploadProgress),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+
+
+
+class InstagramBatchImageEditorPage extends StatefulWidget {
+  final List<File> sourceFiles;
+  final String title;
+
+  const InstagramBatchImageEditorPage({
+    super.key,
+    required this.sourceFiles,
+    required this.title,
+  });
+
+  @override
+  State<InstagramBatchImageEditorPage> createState() =>
+      _InstagramBatchImageEditorPageState();
+}
+
+class _PhotoEditState extends ChangeNotifier {
+  double scale = 1.0;
+  Offset offset = Offset.zero;
+
+  void setOffsetSilently(Offset value) {
+    offset = value;
+  }
+
+  void updateOffset(Offset value) {
+    if ((offset - value).distance < 0.05) return;
+    offset = value;
+    notifyListeners();
+  }
+
+  void updateScale(double value) {
+    if ((scale - value).abs() < 0.001) return;
+    scale = value;
+    notifyListeners();
+  }
+
+  void reset() {
+    scale = 1.0;
+    offset = Offset.zero;
+    notifyListeners();
+  }
+}
+
+class _InstagramBatchImageEditorPageState
+    extends State<InstagramBatchImageEditorPage> {
+  late final PageController _pageController;
+  late final List<_PhotoEditState> _states;
+
+  final List<ui.Size> _imageSizes = <ui.Size>[];
+
+  int _currentIndex = 0;
+  bool _saving = false;
+  bool _loadingImages = true;
+
+  static const double _minScale = 1.0;
+  static const double _maxScale = 5.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController();
+    _states = List<_PhotoEditState>.generate(
+      widget.sourceFiles.length,
+          (_) => _PhotoEditState(),
+    );
+    _loadImageSizes();
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    for (final state in _states) {
+      state.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _loadImageSizes() async {
+    try {
+      final List<ui.Size> sizes = <ui.Size>[];
+      for (final file in widget.sourceFiles) {
+        sizes.add(await _readImageSize(file));
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _imageSizes
+          ..clear()
+          ..addAll(sizes);
+        _loadingImages = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _imageSizes
+          ..clear()
+          ..addAll(
+            List<ui.Size>.generate(
+              widget.sourceFiles.length,
+                  (_) => const ui.Size(1080, 1080),
+            ),
+          );
+        _loadingImages = false;
+      });
+    }
+  }
+
+  Future<ui.Size> _readImageSize(File file) async {
+    final Uint8List bytes = await file.readAsBytes();
+    final img.Image? decoded = img.decodeImage(bytes);
+    if (decoded != null) {
+      final img.Image baked = img.bakeOrientation(decoded);
+      return ui.Size(baked.width.toDouble(), baked.height.toDouble());
+    }
+
+    final ui.Codec codec = await ui.instantiateImageCodec(bytes);
+    final ui.FrameInfo frame = await codec.getNextFrame();
+    final ui.Image image = frame.image;
+    return ui.Size(image.width.toDouble(), image.height.toDouble());
+  }
+
+  Offset _clampOffset({
+    required Offset offset,
+    required double scale,
+    required double imageWidth,
+    required double imageHeight,
+    required double editorSize,
+  }) {
+    if (imageWidth <= 0 || imageHeight <= 0) return Offset.zero;
+
+    final double containScale =
+    math.min(editorSize / imageWidth, editorSize / imageHeight);
+
+    final double visibleWidth = imageWidth * containScale * scale;
+    final double visibleHeight = imageHeight * containScale * scale;
+
+    final double maxDx = math.max(0, (visibleWidth - editorSize) / 2);
+    final double maxDy = math.max(0, (visibleHeight - editorSize) / 2);
+
+    return Offset(
+      offset.dx.clamp(-maxDx, maxDx).toDouble(),
+      offset.dy.clamp(-maxDy, maxDy).toDouble(),
+    );
+  }
+
+  void _resetCurrent() {
+    if (_currentIndex < 0 || _currentIndex >= _states.length) return;
+    _states[_currentIndex].reset();
+  }
+
+  Future<void> _goToPhoto(int index) async {
+    if (_saving || _loadingImages) return;
+    if (index < 0 || index >= widget.sourceFiles.length) return;
+
+    setState(() => _currentIndex = index);
+    await _pageController.animateToPage(
+      index,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  Future<void> _previousPhoto() => _goToPhoto(_currentIndex - 1);
+
+  Future<void> _nextPhoto() => _goToPhoto(_currentIndex + 1);
+
+  Future<File> _exportEditedPhoto({
+    required File file,
+    required _PhotoEditState state,
+    required int index,
+  }) async {
+    final Uint8List bytes = await file.readAsBytes();
+    img.Image? decoded = img.decodeImage(bytes);
+    if (decoded == null) throw Exception('Görsel okunamadı.');
+    decoded = img.bakeOrientation(decoded);
+
+    const int outputSize = 1080;
+    final double imageWidth = decoded.width.toDouble();
+    final double imageHeight = decoded.height.toDouble();
+
+    final double containScale =
+    math.min(outputSize / imageWidth, outputSize / imageHeight);
+    final double totalScale = containScale * state.scale;
+
+    final int drawWidth = math.max(1, (imageWidth * totalScale).round());
+    final int drawHeight = math.max(1, (imageHeight * totalScale).round());
+
+    final Offset clampedOffset = _clampOffset(
+      offset: state.offset,
+      scale: state.scale,
+      imageWidth: imageWidth,
+      imageHeight: imageHeight,
+      editorSize: outputSize.toDouble(),
+    );
+
+    final img.Image canvas = img.Image(
+      width: outputSize,
+      height: outputSize,
+      numChannels: 3,
+    );
+    img.fill(canvas, color: img.ColorRgb8(255, 255, 255));
+
+    final img.Image resized = img.copyResize(
+      decoded,
+      width: drawWidth,
+      height: drawHeight,
+      interpolation: img.Interpolation.average,
+    );
+
+    final int dstX = ((outputSize - drawWidth) / 2 + clampedOffset.dx).round();
+    final int dstY = ((outputSize - drawHeight) / 2 + clampedOffset.dy).round();
+
+    img.compositeImage(canvas, resized, dstX: dstX, dstY: dstY);
+
+    final Directory tempDir = await getTemporaryDirectory();
+    final String path =
+        '${tempDir.path}/nova_post_full_editor_${DateTime.now().microsecondsSinceEpoch}_$index.jpg';
+
+    final File result = File(path);
+    await result.writeAsBytes(img.encodeJpg(canvas, quality: 94), flush: true);
+    return result;
+  }
+
+  Future<void> _saveAll() async {
+    if (_saving || _loadingImages) return;
+    setState(() => _saving = true);
+
+    try {
+      final List<File> resultFiles = <File>[];
+
+      for (int i = 0; i < widget.sourceFiles.length; i++) {
+        resultFiles.add(
+          await _exportEditedPhoto(
+            file: widget.sourceFiles[i],
+            state: _states[i],
+            index: i,
+          ),
+        );
+      }
+
+      if (!mounted) return;
+      Navigator.pop(context, resultFiles);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Fotoğraflar kaydedilemedi: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final int total = widget.sourceFiles.length;
 
     return MediaQuery(
       data: MediaQuery.of(context).copyWith(
         textScaler: const TextScaler.linear(1),
       ),
       child: Scaffold(
-        backgroundColor: Colors.white,
+        backgroundColor: Colors.black,
         body: SafeArea(
-          child: Stack(
+          child: Column(
             children: [
-              Column(
-                children: [
-                  const CreatePostHeader(),
-                  Expanded(
-                    child: ListView(
-                      physics: const ClampingScrollPhysics(),
-                      padding: const EdgeInsets.fromLTRB(14, 14, 14, 120),
-                      children: [
-                        NeonImagePickButton(
-                          controller: neonController,
-                          isSharing: isSharing,
-                          selected: selectedImageFiles.isNotEmpty,
-                          selectedCount: selectedImageFiles.length,
-                          maxCount: maxPostImages,
-                          onTap: pickImageFromGallery,
-                        ),
-                        const SizedBox(height: 8),
-                        const CropInfoText(),
-                        if (selectedImageFiles.isNotEmpty) ...[
-                          const SizedBox(height: 14),
-                          SelectedImagesPreview(
-                            files: selectedImageFiles,
-                            isSharing: isSharing,
-                            maxCount: maxPostImages,
-                            onEditTap: editSelectedImage,
-                            onRemoveTap: removeImage,
+              Container(
+                height: 64,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                decoration: const BoxDecoration(
+                  color: Colors.black,
+                  border: Border(bottom: BorderSide(color: Colors.white12)),
+                ),
+                child: Row(
+                  children: [
+                    IconButton(
+                      onPressed: _saving ? null : () => Navigator.pop(context),
+                      icon: const Icon(
+                        Icons.arrow_back_ios_new_rounded,
+                        color: Colors.white,
+                        size: 26,
+                      ),
+                    ),
+                    Expanded(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            widget.title,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontFamily: 'Roboto',
+                              color: Colors.white,
+                              fontSize: 19,
+                              fontWeight: FontWeight.w900,
+                            ),
                           ),
+                          if (total > 1)
+                            Text(
+                              '${_currentIndex + 1}/$total',
+                              style: const TextStyle(
+                                fontFamily: 'Roboto',
+                                color: Colors.white54,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
                         ],
-                        const SizedBox(height: 14),
-                        LockedLocationBox(
-                          location: lockedProfileLocation,
-                          loading: profileLocationLoading,
-                        ),
-                        const SizedBox(height: 14),
-                        CaptionInputBox(
-                          controller: captionController,
-                          limit: captionLimit,
-                          currentLength: captionLength,
-                        ),
-                        const SizedBox(height: 14),
-                        VisibilitySelectorBox(
-                          selectedVisibility: selectedVisibility,
-                          enabled: !isSharing,
+                      ),
+                    ),
+                    const SizedBox(width: 48),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: _loadingImages
+                    ? const _EditorLoadingView()
+                    : PageView.builder(
+                  controller: _pageController,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: total,
+                  onPageChanged: (index) {
+                    if (mounted) setState(() => _currentIndex = index);
+                  },
+                  itemBuilder: (context, index) {
+                    final ui.Size imageSize = _imageSizes[index];
+
+                    return AdvancedInstagramEditableImageBox(
+                      file: widget.sourceFiles[index],
+                      state: _states[index],
+                      imageWidth: imageSize.width,
+                      imageHeight: imageSize.height,
+                      minScale: _minScale,
+                      maxScale: _maxScale,
+                      clampOffset: _clampOffset,
+                    );
+                  },
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+                child: Column(
+                  children: [
+                    const Text(
+                      'Fotoğraf albümden geldiği gibi tam görünür. Tek parmakla konumlandır, çizgiden yakınlaştır/uzaklaştır.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        color: Colors.white70,
+                        fontSize: 12.5,
+                        height: 1.35,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    AnimatedBuilder(
+                      animation: _states[_currentIndex],
+                      builder: (context, _) {
+                        return _ZoomSliderBox(
+                          value: _states[_currentIndex].scale,
+                          min: _minScale,
+                          max: _maxScale,
+                          enabled: !_saving && !_loadingImages,
                           onChanged: (value) {
-                            if (isSharing || value == selectedVisibility) return;
-                            setState(() => selectedVisibility = value);
+                            if (_saving || _loadingImages) return;
+                            final ui.Size imageSize = _imageSizes[_currentIndex];
+                            _states[_currentIndex].updateScale(value);
+                            _states[_currentIndex].updateOffset(
+                              _clampOffset(
+                                offset: _states[_currentIndex].offset,
+                                scale: value,
+                                imageWidth: imageSize.width,
+                                imageHeight: imageSize.height,
+                                editorSize:
+                                math.min(MediaQuery.of(context).size.width, 430) - 30,
+                              ),
+                            );
                           },
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        _AnalogPhotoButton(
+                          icon: Icons.keyboard_arrow_left_rounded,
+                          label: 'Önceki',
+                          enabled: !_saving && !_loadingImages && _currentIndex > 0,
+                          onTap: _previousPhoto,
+                        ),
+                        const SizedBox(width: 10),
+                        _RoundEditorButton(
+                          icon: Icons.refresh_rounded,
+                          label: 'Sıfırla',
+                          enabled: !_saving && !_loadingImages,
+                          onTap: _resetCurrent,
+                        ),
+                        const SizedBox(width: 10),
+                        _AnalogPhotoButton(
+                          icon: Icons.keyboard_arrow_right_rounded,
+                          label: 'Sonraki',
+                          enabled: !_saving &&
+                              !_loadingImages &&
+                              _currentIndex < total - 1,
+                          onTap: _nextPhoto,
                         ),
                       ],
                     ),
-                  ),
-                  BottomPublishBar(
-                    isSharing: isSharing,
-                    hasImage: selectedImageFiles.isNotEmpty,
-                    progress: uploadProgress,
-                    onShareTap: sharePost,
-                  ),
-                ],
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 50,
+                      child: ElevatedButton.icon(
+                        onPressed: _saving || _loadingImages ? null : _saveAll,
+                        icon: _saving
+                            ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.2,
+                            color: Colors.black,
+                          ),
+                        )
+                            : const Icon(Icons.check_rounded),
+                        label: Text(
+                          _saving
+                              ? 'Kaydediliyor'
+                              : _loadingImages
+                              ? 'Yükleniyor'
+                              : 'Kaydet ve Devam Et',
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: Colors.black,
+                          disabledBackgroundColor: Colors.white70,
+                          disabledForegroundColor: Colors.black45,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(17),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              if (isSharing)
-                UploadLoadingOverlay(progress: uploadProgress),
             ],
           ),
         ),
@@ -670,8 +1185,415 @@ class _CreatePostPageState extends State<CreatePostPage>
   }
 }
 
+class _EditorLoadingView extends StatelessWidget {
+  const _EditorLoadingView();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        width: 178,
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: const Color(0xFF101010),
+          borderRadius: BorderRadius.circular(26),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: const Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 42,
+              height: 42,
+              child: CircularProgressIndicator(
+                strokeWidth: 3,
+                color: Colors.white,
+              ),
+            ),
+            SizedBox(height: 14),
+            Text(
+              'Görseller yükleniyor',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontFamily: 'Roboto',
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class InstagramImageEditorPage extends StatelessWidget {
+  final File sourceFile;
+  final String title;
+
+  const InstagramImageEditorPage({
+    super.key,
+    required this.sourceFile,
+    required this.title,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InstagramBatchImageEditorPage(
+      sourceFiles: [sourceFile],
+      title: title,
+    );
+  }
+}
+
+class AdvancedInstagramEditableImageBox extends StatelessWidget {
+  final File file;
+  final _PhotoEditState state;
+  final double imageWidth;
+  final double imageHeight;
+  final double minScale;
+  final double maxScale;
+  final Offset Function({
+  required Offset offset,
+  required double scale,
+  required double imageWidth,
+  required double imageHeight,
+  required double editorSize,
+  }) clampOffset;
+
+  const AdvancedInstagramEditableImageBox({
+    super.key,
+    required this.file,
+    required this.state,
+    required this.imageWidth,
+    required this.imageHeight,
+    required this.minScale,
+    required this.maxScale,
+    required this.clampOffset,
+  });
+
+  void _onPanUpdate(DragUpdateDetails details, double editorSize) {
+    final Offset nextOffset = state.offset + details.delta;
+
+    final Offset clamped = clampOffset(
+      offset: nextOffset,
+      scale: state.scale,
+      imageWidth: imageWidth,
+      imageHeight: imageHeight,
+      editorSize: editorSize,
+    );
+
+    state.updateOffset(clamped);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double screenWidth = MediaQuery.of(context).size.width;
+    final double editorSize = math.min(screenWidth, 430) - 30;
+
+    final double safeImageWidth = imageWidth <= 0 ? 1 : imageWidth;
+    final double safeImageHeight = imageHeight <= 0 ? 1 : imageHeight;
+
+    final double containScale =
+    math.min(editorSize / safeImageWidth, editorSize / safeImageHeight);
+
+    final double baseWidth = safeImageWidth * containScale;
+    final double baseHeight = safeImageHeight * containScale;
+
+    state.setOffsetSilently(
+      clampOffset(
+        offset: state.offset,
+        scale: state.scale,
+        imageWidth: safeImageWidth,
+        imageHeight: safeImageHeight,
+        editorSize: editorSize,
+      ),
+    );
+
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.white.withOpacity(0.22),
+                  blurRadius: 20,
+                  offset: const Offset(0, 0),
+                ),
+              ],
+            ),
+            child: Container(
+              width: editorSize,
+              height: editorSize,
+              color: Colors.white,
+              child: ClipRect(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanUpdate: (details) => _onPanUpdate(details, editorSize),
+                  child: AnimatedBuilder(
+                    animation: state,
+                    builder: (context, _) {
+                      return Center(
+                        child: Transform.translate(
+                          offset: state.offset,
+                          child: Transform.scale(
+                            scale: state.scale,
+                            child: SizedBox(
+                              width: baseWidth,
+                              height: baseHeight,
+                              child: Image.file(
+                                file,
+                                fit: BoxFit.contain,
+                                filterQuality: FilterQuality.low,
+                                gaplessPlayback: true,
+                                cacheWidth: 1600,
+                                errorBuilder: (_, __, ___) {
+                                  return const Center(
+                                    child: Icon(
+                                      Icons.broken_image_rounded,
+                                      color: Colors.black,
+                                      size: 44,
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          const Text(
+            'Beyaz karenin içinde görünen alan paylaşılacak.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              color: Colors.white54,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ZoomSliderBox extends StatelessWidget {
+  final double value;
+  final double min;
+  final double max;
+  final bool enabled;
+  final ValueChanged<double> onChanged;
+
+  const _ZoomSliderBox({
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final double percent = ((value - min) / (max - min)).clamp(0.0, 1.0);
+    final String zoomText = '${value.toStringAsFixed(2)}x';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF101010),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white24),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.white.withOpacity(0.06),
+            blurRadius: 12,
+            offset: const Offset(0, 0),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.zoom_out_rounded, color: Colors.white70, size: 22),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Yakınlaştırma',
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    color: Colors.white70,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              Text(
+                zoomText,
+                style: const TextStyle(
+                  fontFamily: 'Roboto',
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.zoom_in_rounded, color: Colors.white70, size: 22),
+            ],
+          ),
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              trackHeight: 4,
+              activeTrackColor: Colors.white,
+              inactiveTrackColor: Colors.white24,
+              thumbColor: Colors.white,
+              overlayColor: Colors.white24,
+              valueIndicatorColor: Colors.white,
+              valueIndicatorTextStyle: const TextStyle(
+                color: Colors.black,
+                fontFamily: 'Roboto',
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            child: Slider(
+              value: value.clamp(min, max).toDouble(),
+              min: min,
+              max: max,
+              divisions: 80,
+              label: '${(percent * 100).round()}%',
+              onChanged: enabled ? onChanged : null,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AnalogPhotoButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  const _AnalogPhotoButton({
+    required this.icon,
+    required this.label,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Opacity(
+        opacity: enabled ? 1 : 0.35,
+        child: GestureDetector(
+          onTap: enabled ? onTap : null,
+          child: Container(
+            height: 58,
+            decoration: BoxDecoration(
+              color: const Color(0xFF101010),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.white24),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.white.withOpacity(0.08),
+                  blurRadius: 12,
+                  offset: const Offset(0, 0),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon, color: Colors.white, size: 30),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontFamily: 'Roboto',
+                    color: Colors.white70,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RoundEditorButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  const _RoundEditorButton({
+    required this.icon,
+    required this.label,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Opacity(
+        opacity: enabled ? 1 : 0.35,
+        child: GestureDetector(
+          onTap: enabled ? onTap : null,
+          child: Container(
+            height: 58,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.white24),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon, color: Colors.black, size: 24),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontFamily: 'Roboto',
+                    color: Colors.black,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+
 class CreatePostHeader extends StatelessWidget {
-  const CreatePostHeader({super.key});
+  final VoidCallback onBackTap;
+
+  const CreatePostHeader({super.key, required this.onBackTap});
 
   @override
   Widget build(BuildContext context) {
@@ -680,24 +1602,18 @@ class CreatePostHeader extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: const BoxDecoration(
         color: Colors.white,
-        border: Border(
-          bottom: BorderSide(color: Colors.black12),
-        ),
+        border: Border(bottom: BorderSide(color: Colors.black12)),
       ),
       child: Row(
         children: [
           IconButton(
-            onPressed: () => Navigator.pop(context),
-            icon: const Icon(
-              Icons.arrow_back_ios_new_rounded,
-              color: Colors.black,
-            ),
+            onPressed: onBackTap,
+            icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.black),
           ),
           const Expanded(
             child: Center(
               child: Text(
                 'Post Paylaş',
-                textScaler: TextScaler.noScaling,
                 style: TextStyle(
                   fontFamily: 'Roboto',
                   color: Colors.black,
@@ -727,8 +1643,8 @@ class NeonImagePickButton extends StatelessWidget {
     required this.controller,
     required this.isSharing,
     required this.selected,
-    this.selectedCount = 0,
-    this.maxCount = 5,
+    required this.selectedCount,
+    required this.maxCount,
     required this.onTap,
   });
 
@@ -759,7 +1675,7 @@ class NeonImagePickButton extends StatelessWidget {
             ],
           ),
           child: SizedBox(
-            height: 56,
+            height: 58,
             width: double.infinity,
             child: ElevatedButton.icon(
               onPressed: isSharing ? null : onTap,
@@ -768,7 +1684,6 @@ class NeonImagePickButton extends StatelessWidget {
               ),
               label: Text(
                 selected ? 'Fotoğraf Ekle ($selectedCount/$maxCount)' : 'Fotoğraf Seç (En fazla $maxCount)',
-                textScaler: TextScaler.noScaling,
                 style: const TextStyle(
                   fontFamily: 'Roboto',
                   fontWeight: FontWeight.w900,
@@ -781,9 +1696,7 @@ class NeonImagePickButton extends StatelessWidget {
                 backgroundColor: Colors.white,
                 foregroundColor: Colors.black,
                 elevation: 0,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                ),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               ),
             ),
           ),
@@ -793,17 +1706,17 @@ class NeonImagePickButton extends StatelessWidget {
   }
 }
 
+class InfoText extends StatelessWidget {
+  final String text;
 
-class CropInfoText extends StatelessWidget {
-  const CropInfoText({super.key});
+  const InfoText({super.key, required this.text});
 
   @override
   Widget build(BuildContext context) {
-    return const Text(
-      'Post için en fazla 5 fotoğraf seçebilirsin. Seçilen fotoğraflar otomatik 1080 x 1080 JPG formatına hazırlanır.',
+    return Text(
+      text,
       textAlign: TextAlign.center,
-      textScaler: TextScaler.noScaling,
-      style: TextStyle(
+      style: const TextStyle(
         fontFamily: 'Roboto',
         color: Colors.black45,
         fontSize: 11.5,
@@ -819,7 +1732,10 @@ class SelectedImagesPreview extends StatelessWidget {
   final bool isSharing;
   final int maxCount;
   final void Function(int index) onEditTap;
+  final void Function(int index) onChangeTap;
   final void Function(int index) onRemoveTap;
+  final void Function(int index) onMoveLeft;
+  final void Function(int index) onMoveRight;
 
   const SelectedImagesPreview({
     super.key,
@@ -827,7 +1743,10 @@ class SelectedImagesPreview extends StatelessWidget {
     required this.isSharing,
     required this.maxCount,
     required this.onEditTap,
+    required this.onChangeTap,
     required this.onRemoveTap,
+    required this.onMoveLeft,
+    required this.onMoveRight,
   });
 
   @override
@@ -847,6 +1766,7 @@ class SelectedImagesPreview extends StatelessWidget {
           ),
           itemBuilder: (context, index) {
             final file = files[index];
+
             return Container(
               decoration: BoxDecoration(
                 color: Colors.black,
@@ -869,39 +1789,31 @@ class SelectedImagesPreview extends StatelessWidget {
                       fit: BoxFit.cover,
                       cacheWidth: 720,
                       filterQuality: FilterQuality.low,
+                      errorBuilder: (_, __, ___) {
+                        return const Center(
+                          child: Icon(Icons.broken_image_rounded, color: Colors.white, size: 34),
+                        );
+                      },
                     ),
                   ),
+                  Positioned(top: 8, left: 8, child: _SmallBadge(text: '${index + 1}')),
                   Positioned(
-                    top: 8,
-                    left: 8,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.72),
-                        borderRadius: BorderRadius.circular(99),
-                      ),
-                      child: Text(
-                        '${index + 1}',
-                        textScaler: TextScaler.noScaling,
-                        style: const TextStyle(
-                          fontFamily: 'Roboto',
-                          color: Colors.white,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    top: 8,
                     right: 8,
+                    top: 8,
                     child: Row(
                       children: [
                         RoundActionButton(
-                          icon: Icons.crop_rotate_rounded,
+                          icon: Icons.tune_rounded,
                           size: 34,
                           iconSize: 18,
                           onTap: isSharing ? null : () => onEditTap(index),
+                        ),
+                        const SizedBox(width: 6),
+                        RoundActionButton(
+                          icon: Icons.change_circle_rounded,
+                          size: 34,
+                          iconSize: 18,
+                          onTap: isSharing ? null : () => onChangeTap(index),
                         ),
                         const SizedBox(width: 6),
                         RoundActionButton(
@@ -913,12 +1825,60 @@ class SelectedImagesPreview extends StatelessWidget {
                       ],
                     ),
                   ),
+                  Positioned(
+                    left: 8,
+                    right: 8,
+                    bottom: 8,
+                    child: Row(
+                      children: [
+                        RoundActionButton(
+                          icon: Icons.chevron_left_rounded,
+                          size: 34,
+                          iconSize: 22,
+                          onTap: isSharing || index == 0 ? null : () => onMoveLeft(index),
+                        ),
+                        const Spacer(),
+                        RoundActionButton(
+                          icon: Icons.chevron_right_rounded,
+                          size: 34,
+                          iconSize: 22,
+                          onTap: isSharing || index == files.length - 1 ? null : () => onMoveRight(index),
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             );
           },
         ),
       ],
+    );
+  }
+}
+
+class _SmallBadge extends StatelessWidget {
+  final String text;
+
+  const _SmallBadge({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.72),
+        borderRadius: BorderRadius.circular(99),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontFamily: 'Roboto',
+          color: Colors.white,
+          fontWeight: FontWeight.w900,
+          fontSize: 12,
+        ),
+      ),
     );
   }
 }
@@ -942,22 +1902,16 @@ class RoundActionButton extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Opacity(
-        opacity: onTap == null ? 0.45 : 1,
+        opacity: onTap == null ? 0.38 : 1,
         child: Container(
           width: size,
           height: size,
           decoration: BoxDecoration(
             color: Colors.black.withOpacity(0.72),
             shape: BoxShape.circle,
-            border: Border.all(
-              color: Colors.white.withOpacity(0.18),
-            ),
+            border: Border.all(color: Colors.white.withOpacity(0.18)),
           ),
-          child: Icon(
-            icon,
-            color: Colors.white,
-            size: iconSize,
-          ),
+          child: Icon(icon, color: Colors.white, size: iconSize),
         ),
       ),
     );
@@ -968,11 +1922,7 @@ class LockedLocationBox extends StatelessWidget {
   final String location;
   final bool loading;
 
-  const LockedLocationBox({
-    super.key,
-    required this.location,
-    required this.loading,
-  });
+  const LockedLocationBox({super.key, required this.location, required this.loading});
 
   @override
   Widget build(BuildContext context) {
@@ -1002,7 +1952,6 @@ class LockedLocationBox extends StatelessWidget {
                   text,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  textScaler: TextScaler.noScaling,
                   style: TextStyle(
                     fontFamily: 'Roboto',
                     color: location.isEmpty && !loading ? Colors.red : Colors.black,
@@ -1017,7 +1966,6 @@ class LockedLocationBox extends StatelessWidget {
         const SizedBox(height: 7),
         const Text(
           'Konum bilgisi kilitlidir, sadece profilden düzenlenebilir.',
-          textScaler: TextScaler.noScaling,
           style: TextStyle(
             fontFamily: 'Roboto',
             color: Colors.black45,
@@ -1052,9 +2000,7 @@ class CaptionInputBox extends StatelessWidget {
           controller: controller,
           maxLines: 5,
           maxLength: limit,
-          inputFormatters: [
-            LengthLimitingTextInputFormatter(limit),
-          ],
+          inputFormatters: [LengthLimitingTextInputFormatter(limit)],
           style: const TextStyle(
             fontFamily: 'Roboto',
             color: Colors.black,
@@ -1079,16 +2025,11 @@ class CaptionInputBox extends StatelessWidget {
         const SizedBox(height: 8),
         Row(
           children: [
-            const Icon(
-              Icons.info_outline_rounded,
-              color: Colors.black38,
-              size: 17,
-            ),
+            const Icon(Icons.info_outline_rounded, color: Colors.black38, size: 17),
             const SizedBox(width: 6),
             const Expanded(
               child: Text(
                 'Açıklama sınırı 300 karakterdir.',
-                textScaler: TextScaler.noScaling,
                 style: TextStyle(
                   fontFamily: 'Roboto',
                   color: Colors.black45,
@@ -1099,7 +2040,6 @@ class CaptionInputBox extends StatelessWidget {
             ),
             Text(
               '$currentLength/$limit',
-              textScaler: TextScaler.noScaling,
               style: TextStyle(
                 fontFamily: 'Roboto',
                 color: currentLength >= limit ? Colors.red : Colors.black45,
@@ -1197,7 +2137,6 @@ class VisibilityChoiceButton extends StatelessWidget {
           title,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          textScaler: TextScaler.noScaling,
           style: TextStyle(
             fontFamily: 'Roboto',
             color: selected ? Colors.white : Colors.black54,
@@ -1214,11 +2153,7 @@ class OptionSection extends StatelessWidget {
   final String title;
   final List<Widget> children;
 
-  const OptionSection({
-    super.key,
-    required this.title,
-    required this.children,
-  });
+  const OptionSection({super.key, required this.title, required this.children});
 
   @override
   Widget build(BuildContext context) {
@@ -1228,9 +2163,7 @@ class OptionSection extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(
-          color: Colors.black.withOpacity(0.08),
-        ),
+        border: Border.all(color: Colors.black.withOpacity(0.08)),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.035),
@@ -1244,7 +2177,6 @@ class OptionSection extends StatelessWidget {
         children: [
           Text(
             title,
-            textScaler: TextScaler.noScaling,
             style: const TextStyle(
               fontFamily: 'Roboto',
               color: Colors.black,
@@ -1282,9 +2214,7 @@ class BottomPublishBar extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
       decoration: const BoxDecoration(
         color: Colors.white,
-        border: Border(
-          top: BorderSide(color: Colors.black12),
-        ),
+        border: Border(top: BorderSide(color: Colors.black12)),
       ),
       child: SafeArea(
         top: false,
@@ -1302,18 +2232,10 @@ class BottomPublishBar extends StatelessWidget {
                 color: Colors.white,
               ),
             )
-                : Icon(
-              hasImage
-                  ? Icons.send_rounded
-                  : Icons.photo_library_rounded,
-            ),
+                : Icon(hasImage ? Icons.send_rounded : Icons.photo_library_rounded),
             label: Text(
               isSharing ? 'Yükleniyor %$percent' : 'Paylaş',
-              textScaler: TextScaler.noScaling,
-              style: const TextStyle(
-                fontFamily: 'Roboto',
-                fontWeight: FontWeight.w900,
-              ),
+              style: const TextStyle(fontFamily: 'Roboto', fontWeight: FontWeight.w900),
             ),
             style: ElevatedButton.styleFrom(
               disabledBackgroundColor: Colors.black54,
@@ -1321,9 +2243,7 @@ class BottomPublishBar extends StatelessWidget {
               backgroundColor: Colors.black,
               foregroundColor: Colors.white,
               elevation: 0,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(18),
-              ),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
             ),
           ),
         ),
@@ -1335,10 +2255,7 @@ class BottomPublishBar extends StatelessWidget {
 class UploadLoadingOverlay extends StatelessWidget {
   final double progress;
 
-  const UploadLoadingOverlay({
-    super.key,
-    required this.progress,
-  });
+  const UploadLoadingOverlay({super.key, required this.progress});
 
   @override
   Widget build(BuildContext context) {
@@ -1380,7 +2297,6 @@ class UploadLoadingOverlay extends StatelessWidget {
                     ),
                     Text(
                       '%$percent',
-                      textScaler: TextScaler.noScaling,
                       style: const TextStyle(
                         fontFamily: 'Roboto',
                         color: Colors.white,
@@ -1393,7 +2309,6 @@ class UploadLoadingOverlay extends StatelessWidget {
                 const SizedBox(height: 14),
                 const Text(
                   'Yükleniyor',
-                  textScaler: TextScaler.noScaling,
                   style: TextStyle(
                     fontFamily: 'Roboto',
                     color: Colors.white,

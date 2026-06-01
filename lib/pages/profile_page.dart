@@ -265,28 +265,59 @@ class _ProfilePageState extends State<ProfilePage> {
     final viewer = _me;
     if (viewer == null || _profileUid.isEmpty || viewer.uid == _profileUid) return;
 
-    final id = '${_profileUid}_${viewer.uid}';
-    final batch = _db.batch();
+    try {
+      final viewerSnap = await _db.collection('users').doc(viewer.uid).get();
+      final viewerData = viewerSnap.data() ?? <String, dynamic>{};
 
-    batch.set(_db.collection('profileViews').doc(id), {
-      'userId': _profileUid,
-      'profileUserId': _profileUid,
-      'viewerUserId': viewer.uid,
-      'viewerEmail': viewer.email ?? '',
-      'viewerName': viewer.displayName ?? '',
-      'viewerPhotoUrl': viewer.photoURL ?? '',
-      'viewCount': FieldValue.increment(1),
-      'lastViewedAt': FieldValue.serverTimestamp(),
-      'createdAt': FieldValue.serverTimestamp(),
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+      final viewerUsername = _safeString(
+        viewerData['username'],
+        fallback: _safeString(viewer.displayName, fallback: 'nova.user'),
+      ).replaceAll('@', '');
 
-    batch.set(_profileRef, {
-      'profileViewsCount': FieldValue.increment(1),
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+      final viewerName = _safeString(
+        viewerData['displayName'] ?? viewerData['fullName'] ?? viewerData['name'],
+        fallback: _safeString(viewer.displayName, fallback: viewerUsername),
+      );
 
-    await batch.commit();
+      final viewerPhoto = _safeString(
+        viewerData['photoUrl'] ??
+            viewerData['profileImage'] ??
+            viewerData['profileImageUrl'] ??
+            viewerData['userPhoto'] ??
+            viewerData['avatarUrl'],
+        fallback: _safeString(viewer.photoURL),
+      );
+
+      final id = '${_profileUid}_${viewer.uid}';
+      final batch = _db.batch();
+
+      batch.set(_db.collection('profileViews').doc(id), {
+        'id': id,
+        'userId': _profileUid,
+        'profileUserId': _profileUid,
+        'viewerUserId': viewer.uid,
+        'viewerUid': viewer.uid,
+        'viewerEmail': viewer.email ?? '',
+        'viewerUsername': viewerUsername,
+        'viewerName': viewerName,
+        'viewerDisplayName': viewerName,
+        'viewerPhotoUrl': viewerPhoto,
+        'viewerPhoto': viewerPhoto,
+        'viewCount': FieldValue.increment(1),
+        'lastViewedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'createdAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      batch.set(_profileRef, {
+        'profileViewsCount': FieldValue.increment(1),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      await batch.commit();
+    } catch (_) {
+      // Profil görüntüleme kaydı başarısız olursa profil sayfası açılmaya devam eder.
+    }
   }
 
   String _makeUsername(String source) {
@@ -500,7 +531,7 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   void _openMenu(NovaProfile profile) {
-    _showHalfSheet(
+    _showFullScreenSheet(
       child: _ProfileMenuNavigatorSheet(
         profile: profile,
         isOwnProfile: _isOwnProfile,
@@ -600,6 +631,53 @@ class _ProfilePageState extends State<ProfilePage> {
                 child: child,
               ),
             ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showFullScreenSheet({required Widget child}) {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Kapat',
+      barrierColor: Colors.black.withOpacity(0.35),
+      transitionDuration: const Duration(milliseconds: 160),
+      pageBuilder: (dialogContext, animation, secondaryAnimation) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                width: double.infinity,
+                height: double.infinity,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(26),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.18),
+                      blurRadius: 28,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: child,
+              ),
+            ),
+          ),
+        );
+      },
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        final curved = CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
+        return FadeTransition(
+          opacity: curved,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.98, end: 1).animate(curved),
+            child: child,
           ),
         );
       },
@@ -1403,7 +1481,7 @@ class ProfileMiniGridLoading extends StatelessWidget {
   }
 }
 
-enum _ProfileMenuPage { root, archive, storyHistory, saved, visitors }
+enum _ProfileMenuPage { root, archive, storyHistory, saved, visitors, liked, blocked, interactions }
 
 class _ProfileMenuNavigatorSheet extends StatefulWidget {
   final NovaProfile profile;
@@ -1442,11 +1520,169 @@ class _ProfileMenuNavigatorSheetState extends State<_ProfileMenuNavigatorSheet> 
     }
   }
 
+  Future<void> _openLegalUrl(String url) async {
+    final uri = Uri.parse(url);
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sayfa açılamadı. Lütfen internet bağlantını kontrol et.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<bool> _confirmDeleteAccount() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.38),
+      builder: (_) {
+        return AlertDialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          title: const Text(
+            'Hesabı kalıcı sil',
+            textScaler: TextScaler.noScaling,
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              color: Colors.black,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          content: const Text(
+            'Bu işlem hesabını ve NOVA içindeki kullanıcı verilerini siler. İşlem geri alınamaz. Devam etmek istiyor musun?',
+            textScaler: TextScaler.noScaling,
+            style: TextStyle(
+              fontFamily: 'Roboto',
+              color: Colors.black87,
+              fontWeight: FontWeight.w700,
+              height: 1.35,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Vazgeç'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text(
+                'Hesabı Sil',
+                style: TextStyle(
+                  color: Color(0xFFE53935),
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    return ok == true;
+  }
+
+  Future<void> _deleteQueryDocs(Query<Map<String, dynamic>> query) async {
+    while (true) {
+      final snap = await query.limit(450).get();
+      if (snap.docs.isEmpty) return;
+
+      final batch = widget.db.batch();
+      for (final doc in snap.docs) {
+        batch.delete(doc.reference);
+      }
+      await batch.commit();
+
+      if (snap.docs.length < 450) return;
+    }
+  }
+
+  Future<void> _deleteUserSubCollection(String collectionPath) async {
+    await _deleteQueryDocs(widget.db.collection(collectionPath));
+  }
+
+  Future<void> _deleteMyAccountNow() async {
+    if (!widget.isOwnProfile) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    final uid = user?.uid ?? widget.profileUid;
+    if (user == null || uid.trim().isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Hesap bulunamadı. Tekrar giriş yapıp dene.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    final ok = await _confirmDeleteAccount();
+    if (!ok) return;
+
+    try {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Hesabın siliniyor...'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+
+      await Future.wait([
+        _deleteUserSubCollection('users/$uid/notifications'),
+        _deleteUserSubCollection('users/$uid/followRequests'),
+        _deleteUserSubCollection('users/$uid/sentFollowRequests'),
+        _deleteUserSubCollection('users/$uid/favoriteCarAds'),
+      ]);
+
+      await Future.wait([
+        _deleteQueryDocs(widget.db.collection('posts').where('userId', isEqualTo: uid)),
+        _deleteQueryDocs(widget.db.collection('carAds').where('userId', isEqualTo: uid)),
+        _deleteQueryDocs(widget.db.collection('stories').where('userId', isEqualTo: uid)),
+        _deleteQueryDocs(widget.db.collection('profileViews').where('profileUserId', isEqualTo: uid)),
+        _deleteQueryDocs(widget.db.collection('profileViews').where('viewerUserId', isEqualTo: uid)),
+      ]);
+
+      final username = widget.profile.usernameText.trim().toLowerCase().replaceAll('@', '');
+      final batch = widget.db.batch();
+
+      batch.delete(widget.db.collection('users').doc(uid));
+      if (username.isNotEmpty) {
+        batch.delete(widget.db.collection('usernames').doc(username));
+      }
+      await batch.commit();
+
+      await user.delete();
+
+      if (!mounted) return;
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      final msg = e.code == 'requires-recent-login'
+          ? 'Güvenlik için önce hesaptan çıkıp tekrar giriş yap, sonra hesabı sil.'
+          : 'Hesap silinemedi: ${e.message ?? e.code}';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Hesap silinemedi. Firebase kurallarını kontrol et.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        const _SheetHandle(),
+        const SizedBox(height: 8),
         Padding(
           padding: const EdgeInsets.fromLTRB(8, 0, 16, 10),
           child: Row(
@@ -1465,10 +1701,25 @@ class _ProfileMenuNavigatorSheetState extends State<_ProfileMenuNavigatorSheet> 
                   style: _boldBlack,
                 ),
               ),
+              IconButton(
+                tooltip: 'Kapat',
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.close_rounded, color: Colors.black, size: 28),
+              ),
             ],
           ),
         ),
-        Expanded(child: _body()),
+        Expanded(
+          child: RefreshIndicator(
+            color: Colors.black,
+            backgroundColor: Colors.white,
+            onRefresh: () async {
+              setState(() {});
+              await Future<void>.delayed(const Duration(milliseconds: 280));
+            },
+            child: _body(),
+          ),
+        ),
       ],
     );
   }
@@ -1483,6 +1734,12 @@ class _ProfileMenuNavigatorSheetState extends State<_ProfileMenuNavigatorSheet> 
         return 'Kaydedilenler';
       case _ProfileMenuPage.visitors:
         return 'Profiline Son Bakanlar';
+      case _ProfileMenuPage.liked:
+        return 'Son Beğenilenler';
+      case _ProfileMenuPage.blocked:
+        return 'Engellenenler';
+      case _ProfileMenuPage.interactions:
+        return 'Etkileşim Sayıları';
       case _ProfileMenuPage.root:
         return widget.profile.displayUsername;
     }
@@ -1526,8 +1783,19 @@ class _ProfileMenuNavigatorSheetState extends State<_ProfileMenuNavigatorSheet> 
               .limit(80)
               .snapshots(),
         );
+      case _ProfileMenuPage.liked:
+        return _LikedPostsSheetBody(userId: widget.profileUid, db: widget.db);
+      case _ProfileMenuPage.blocked:
+        return _BlockedUsersSheetBody(userId: widget.profileUid, db: widget.db);
+      case _ProfileMenuPage.interactions:
+        return _InteractionStatsSheetBody(
+          userId: widget.profileUid,
+          db: widget.db,
+          profileStream: widget.profileRef.snapshots(),
+        );
       case _ProfileMenuPage.root:
         return ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
           children: [
             if (widget.isOwnProfile)
@@ -1546,7 +1814,46 @@ class _ProfileMenuNavigatorSheetState extends State<_ProfileMenuNavigatorSheet> 
             _MenuTile(icon: Icons.archive_outlined, title: 'Post Arşivi', onTap: () => setState(() => page = _ProfileMenuPage.archive)),
             _MenuTile(icon: Icons.history_toggle_off_rounded, title: 'Story Geçmişi', onTap: () => setState(() => page = _ProfileMenuPage.storyHistory)),
             _MenuTile(icon: Icons.bookmark_border_rounded, title: 'Kaydedilenler', onTap: () => setState(() => page = _ProfileMenuPage.saved)),
-            _MenuTile(icon: Icons.visibility_outlined, title: 'Profiline Son Bakanlar', onTap: () => setState(() => page = _ProfileMenuPage.visitors)),
+            _MenuTile(icon: Icons.favorite_border_rounded, title: 'Son Beğenilenler', onTap: () => setState(() => page = _ProfileMenuPage.liked)),
+            if (widget.isOwnProfile) ...[
+              _MenuTile(icon: Icons.visibility_outlined, title: 'Profiline Son Bakanlar', onTap: () => setState(() => page = _ProfileMenuPage.visitors)),
+              _MenuTile(icon: Icons.block_rounded, title: 'Engellenenler Listesi', onTap: () => setState(() => page = _ProfileMenuPage.blocked)),
+              _MenuTile(icon: Icons.analytics_outlined, title: 'Etkileşim Sayıları', onTap: () => setState(() => page = _ProfileMenuPage.interactions)),
+            ],
+            const Padding(
+              padding: EdgeInsets.fromLTRB(4, 12, 4, 6),
+              child: Text(
+                'Bilgilendirme',
+                textScaler: TextScaler.noScaling,
+                style: TextStyle(
+                  fontFamily: 'Roboto',
+                  color: Colors.black45,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+            _MenuTile(
+              icon: Icons.privacy_tip_outlined,
+              title: 'Gizlilik Politikası',
+              onTap: () => _openLegalUrl('https://kaanayaz.com.tr/privacy-policy.html'),
+            ),
+            _MenuTile(
+              icon: Icons.verified_user_outlined,
+              title: 'Güvenlik Standartları',
+              onTap: () => _openLegalUrl('https://kaanayaz.com.tr/child-safety-standards.html'),
+            ),
+            _MenuTile(
+              icon: Icons.manage_accounts_outlined,
+              title: 'Hesap Silme Talebi',
+              onTap: () => _openLegalUrl('https://kaanayaz.com.tr/nova-delete-account.html'),
+            ),
+            if (widget.isOwnProfile)
+              _MenuTile(
+                icon: Icons.delete_forever_rounded,
+                title: 'Hesabımı Kalıcı Sil',
+                onTap: _deleteMyAccountNow,
+              ),
           ],
         );
     }
@@ -1745,16 +2052,55 @@ class _VisitorsSheetBody extends StatelessWidget {
           separatorBuilder: (_, __) => const SizedBox(height: 10),
           itemBuilder: (context, index) {
             final data = docs[index].data();
-            return Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(color: const Color(0xFFF6F6F7), borderRadius: BorderRadius.circular(16)),
-              child: Row(
-                children: [
-                  _SmallAvatar(imageUrl: _safeString(data['viewerPhotoUrl']), size: 44),
-                  const SizedBox(width: 12),
-                  Expanded(child: Text(_safeString(data['viewerName'] ?? data['viewerEmail'], fallback: 'Nova kullanıcısı'), style: _boldBlack)),
-                  Text('${_asInt(data['viewCount'])} kez', style: _mutedBold),
-                ],
+            final viewerUid = _safeString(data['viewerUserId'] ?? data['viewerUid']);
+            final username = _safeString(data['viewerUsername']).replaceAll('@', '');
+            final displayName = _safeString(
+              data['viewerDisplayName'] ?? data['viewerName'] ?? data['viewerEmail'],
+              fallback: 'Nova kullanıcısı',
+            );
+            final photoUrl = _safeString(data['viewerPhotoUrl'] ?? data['viewerPhoto']);
+            return InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: viewerUid.isEmpty
+                  ? null
+                  : () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => UserProfilePage(userId: viewerUid)),
+                );
+              },
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(color: const Color(0xFFF6F6F7), borderRadius: BorderRadius.circular(16)),
+                child: Row(
+                  children: [
+                    _SmallAvatar(imageUrl: photoUrl, size: 44),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            username.isEmpty ? displayName : '@$username',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            textScaler: TextScaler.noScaling,
+                            style: _boldBlack,
+                          ),
+                          if (username.isNotEmpty && displayName.isNotEmpty)
+                            Text(
+                              displayName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textScaler: TextScaler.noScaling,
+                              style: _mutedBold,
+                            ),
+                        ],
+                      ),
+                    ),
+                    Text('${_asInt(data['viewCount'])} kez', style: _mutedBold),
+                  ],
+                ),
               ),
             );
           },
@@ -1764,6 +2110,294 @@ class _VisitorsSheetBody extends StatelessWidget {
   }
 }
 
+
+
+class _LikedPostsSheetBody extends StatelessWidget {
+  final String userId;
+  final FirebaseFirestore db;
+
+  const _LikedPostsSheetBody({required this.userId, required this.db});
+
+  @override
+  Widget build(BuildContext context) {
+    if (userId.trim().isEmpty) {
+      return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [SizedBox(height: 260, child: Center(child: Text('Kullanıcı bulunamadı.', style: _mutedBold)))],
+      );
+    }
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: db
+          .collection('posts')
+          .where('likedBy', arrayContains: userId)
+          .limit(80)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator(color: Colors.black));
+        }
+
+        final docs = (snapshot.data?.docs ?? [])
+            .where((doc) => doc.data()['deleted'] != true && doc.data()['active'] != false)
+            .toList();
+
+        docs.sort((a, b) {
+          final aDate = _toDate(a.data()['createdAt']);
+          final bDate = _toDate(b.data()['createdAt']);
+          return bDate.compareTo(aDate);
+        });
+
+        if (docs.isEmpty) {
+          return ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: [SizedBox(height: 260, child: Center(child: Text('Son beğenilen gönderi yok.', style: _mutedBold)))],
+          );
+        }
+
+        return ListView.separated(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+          itemCount: docs.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
+          itemBuilder: (context, index) {
+            final doc = docs[index];
+            final data = doc.data();
+            return _SavedPostTile(
+              data: data,
+              username: _safeString(data['username'] ?? data['displayName'], fallback: 'nova.user'),
+              location: _safeString(data['location']),
+              desc: _safeString(data['caption'] ?? data['desc'] ?? data['description']),
+              onRemove: () async {
+                await db.collection('posts').doc(doc.id).set({
+                  'likedBy': FieldValue.arrayRemove([userId]),
+                  'likeCount': FieldValue.increment(-1),
+                  'likes': FieldValue.increment(-1),
+                  'likesCount': FieldValue.increment(-1),
+                  'updatedAt': FieldValue.serverTimestamp(),
+                }, SetOptions(merge: true));
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _BlockedUsersSheetBody extends StatelessWidget {
+  final String userId;
+  final FirebaseFirestore db;
+
+  const _BlockedUsersSheetBody({required this.userId, required this.db});
+
+  List<String> _blockedIds(Map<String, dynamic> data) {
+    final raw = data['blockedUserIds'] ?? data['blockedUsers'] ?? data['blockedIds'] ?? <dynamic>[];
+    if (raw is List) {
+      return raw.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toSet().toList();
+    }
+    return <String>[];
+  }
+
+  Future<void> _unblock(String targetUid) async {
+    await db.collection('users').doc(userId).set({
+      'blockedUserIds': FieldValue.arrayRemove([targetUid]),
+      'blockedUsers': FieldValue.arrayRemove([targetUid]),
+      'blockedIds': FieldValue.arrayRemove([targetUid]),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: db.collection('users').doc(userId).snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator(color: Colors.black));
+        }
+
+        final ids = _blockedIds(snapshot.data?.data() ?? <String, dynamic>{});
+
+        if (ids.isEmpty) {
+          return ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: [SizedBox(height: 260, child: Center(child: Text('Engellenen kullanıcı yok.', style: _mutedBold)))],
+          );
+        }
+
+        return ListView.separated(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+          itemCount: ids.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
+          itemBuilder: (context, index) {
+            final blockedUid = ids[index];
+            return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+              stream: db.collection('users').doc(blockedUid).snapshots(),
+              builder: (context, userSnap) {
+                final data = userSnap.data?.data() ?? <String, dynamic>{};
+                final username = _safeString(data['username'], fallback: _safeString(data['displayName'], fallback: 'nova.user')).replaceAll('@', '');
+                final displayName = _safeString(data['displayName'] ?? data['fullName'] ?? data['name']);
+                final photoUrl = _safeString(data['photoUrl'] ?? data['profileImage'] ?? data['profileImageUrl'] ?? data['userPhoto'] ?? data['avatarUrl']);
+
+                return Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF6F6F7),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Row(
+                    children: [
+                      _SmallAvatar(imageUrl: photoUrl, size: 44),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('@$username', maxLines: 1, overflow: TextOverflow.ellipsis, textScaler: TextScaler.noScaling, style: _boldBlack),
+                            if (displayName.isNotEmpty)
+                              Text(displayName, maxLines: 1, overflow: TextOverflow.ellipsis, textScaler: TextScaler.noScaling, style: _mutedBold),
+                          ],
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => _unblock(blockedUid),
+                        child: const Text('Engeli kaldır', style: TextStyle(color: Colors.red, fontWeight: FontWeight.w900)),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _InteractionStatsSheetBody extends StatelessWidget {
+  final String userId;
+  final FirebaseFirestore db;
+  final Stream<DocumentSnapshot<Map<String, dynamic>>> profileStream;
+
+  const _InteractionStatsSheetBody({
+    required this.userId,
+    required this.db,
+    required this.profileStream,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: profileStream,
+      builder: (context, profileSnap) {
+        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: db.collection('posts').where('userId', isEqualTo: userId).limit(200).snapshots(),
+          builder: (context, postSnap) {
+            if (profileSnap.connectionState == ConnectionState.waiting || postSnap.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator(color: Colors.black));
+            }
+
+            final profile = profileSnap.data?.data() ?? <String, dynamic>{};
+            final posts = (postSnap.data?.docs ?? []).map((e) => e.data()).toList();
+            int totalLikes = 0;
+            int totalComments = 0;
+            int totalSaves = 0;
+            int totalShares = 0;
+            int totalViews = 0;
+            int activePosts = 0;
+
+            for (final post in posts) {
+              if (post['deleted'] == true || post['active'] == false) continue;
+              activePosts++;
+              totalLikes += _asInt(post['likeCount'] ?? post['likes'] ?? post['likesCount']);
+              totalComments += _asInt(post['commentCount'] ?? post['commentsCount']);
+              totalSaves += _asInt(post['saveCount'] ?? post['savesCount']);
+              totalShares += _asInt(post['shareCount'] ?? post['sharesCount'] ?? post['sendCount']);
+              totalViews += _asInt(post['viewCount'] ?? post['viewsCount'] ?? post['seenCount']);
+            }
+
+            final rows = <_InteractionStatData>[
+              _InteractionStatData(Icons.grid_on_rounded, 'Aktif post', activePosts),
+              _InteractionStatData(Icons.favorite_rounded, 'Toplam beğeni', totalLikes),
+              _InteractionStatData(Icons.mode_comment_rounded, 'Toplam yorum', totalComments),
+              _InteractionStatData(Icons.bookmark_rounded, 'Toplam kaydetme', totalSaves),
+              _InteractionStatData(Icons.send_rounded, 'Toplam paylaşım', totalShares),
+              _InteractionStatData(Icons.remove_red_eye_rounded, 'Post görüntülenme', totalViews),
+              _InteractionStatData(Icons.visibility_rounded, 'Profil görüntülenme', _asInt(profile['profileViewsCount'])),
+              _InteractionStatData(Icons.auto_stories_rounded, 'Story sayısı', _asInt(profile['storiesCount'])),
+            ];
+
+            return ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+              children: [
+                const Text(
+                  'NOVA içindeki etkileşimlerini buradan takip edebilirsin.',
+                  textScaler: TextScaler.noScaling,
+                  style: TextStyle(fontFamily: 'Roboto', color: Colors.black54, fontWeight: FontWeight.w800, height: 1.35),
+                ),
+                const SizedBox(height: 14),
+                GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: rows.length,
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    mainAxisSpacing: 10,
+                    crossAxisSpacing: 10,
+                    childAspectRatio: 1.35,
+                  ),
+                  itemBuilder: (context, index) {
+                    final row = rows[index];
+                    return Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF6F6F7),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: Colors.black.withOpacity(0.06)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Icon(row.icon, color: Colors.black, size: 25),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(_compactInt(row.value), textScaler: TextScaler.noScaling, style: const TextStyle(fontFamily: 'Roboto', color: Colors.black, fontSize: 22, fontWeight: FontWeight.w900)),
+                              Text(row.title, maxLines: 1, overflow: TextOverflow.ellipsis, textScaler: TextScaler.noScaling, style: _mutedBold),
+                            ],
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _InteractionStatData {
+  final IconData icon;
+  final String title;
+  final int value;
+
+  const _InteractionStatData(this.icon, this.title, this.value);
+}
+
+String _compactInt(int value) {
+  if (value >= 1000000) return '${(value / 1000000).toStringAsFixed(1)}M';
+  if (value >= 1000) return '${(value / 1000).toStringAsFixed(1)}B';
+  return value.toString();
+}
 
 class _TopBar extends StatelessWidget {
   final String username;

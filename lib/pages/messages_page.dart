@@ -1256,10 +1256,19 @@ class ChatDetailPage extends StatefulWidget {
   final String chatId;
   final String otherUid;
 
+  /// Çekici / ilan detayından DM kutusuna gelince otomatik mesaj göndermez.
+  /// Sadece ilan önizlemesini sohbet ekranında gösterir ve hazır mesajı inputa yazar.
+  final Map<String, dynamic>? initialAdPreview;
+  final String initialMessageText;
+  final bool focusMessageInput;
+
   const ChatDetailPage({
     super.key,
     required this.chatId,
     required this.otherUid,
+    this.initialAdPreview,
+    this.initialMessageText = '',
+    this.focusMessageInput = false,
   });
 
   @override
@@ -1287,6 +1296,7 @@ class _ChatDetailPageState extends State<ChatDetailPage>
 
   bool emojiOpen = false;
   bool sending = false;
+  bool showInitialAdPreview = true;
 
   final List<String> emojis = const [
     '🔥',
@@ -1327,6 +1337,22 @@ class _ChatDetailPageState extends State<ChatDetailPage>
     setActiveChat(true);
     markRead();
     listenIncomingMessagesForSeen();
+
+    final draftText = widget.initialMessageText.trim();
+    if (draftText.isNotEmpty) {
+      messageController.text = draftText;
+      messageController.selection = TextSelection.fromPosition(
+        TextPosition(offset: messageController.text.length),
+      );
+    }
+
+    if (widget.focusMessageInput) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          messageFocusNode.requestFocus();
+        }
+      });
+    }
   }
 
   @override
@@ -1748,10 +1774,17 @@ class _ChatDetailPageState extends State<ChatDetailPage>
       );
       final shouldNotifyReceiver = !receiverIsInsideChat;
 
+      final adPreview = widget.initialAdPreview == null
+          ? <String, dynamic>{}
+          : Map<String, dynamic>.from(widget.initialAdPreview!);
+
+      final hasAdContext = adPreview.isNotEmpty;
+
       await messagesRef.add({
         'senderId': currentUid,
         'receiverId': receiverUid,
-        'type': 'text',
+        'type': hasAdContext ? 'tow_ad_text' : 'text',
+        'messageType': hasAdContext ? 'tow_ad_text' : 'text',
         'text': text,
         'imageUrl': '',
         'senderName': senderName,
@@ -1763,6 +1796,14 @@ class _ChatDetailPageState extends State<ChatDetailPage>
         'reaction': '',
         'deletedFor': <String>[],
         'notifyReceiver': shouldNotifyReceiver,
+        if (hasAdContext) ...{
+          'adContext': adPreview,
+          'adType': adPreview['adType'] ?? adPreview['type'] ?? 'tow_ad',
+          'adId': adPreview['adId'] ?? adPreview['id'] ?? adPreview['towAdId'] ?? '',
+          'towAdId': adPreview['towAdId'] ?? adPreview['adId'] ?? adPreview['id'] ?? '',
+          'towAdTitle': adPreview['towAdTitle'] ?? adPreview['title'] ?? adPreview['companyName'] ?? '',
+          'towAdImage': adPreview['towAdImage'] ?? adPreview['imageUrl'] ?? adPreview['image'] ?? '',
+        },
       });
 
       await chatDoc.set({
@@ -1772,8 +1813,8 @@ class _ChatDetailPageState extends State<ChatDetailPage>
           currentUid: true,
           receiverUid: true,
         },
-        'lastMessage': text,
-        'lastMessageType': 'text',
+        'lastMessage': hasAdContext ? 'İlan hakkında mesaj: $messagePreview' : text,
+        'lastMessageType': hasAdContext ? 'tow_ad_text' : 'text',
         'lastSenderId': currentUid,
         'lastSenderName': senderName,
         'lastSenderUsername': senderUserName,
@@ -1947,13 +1988,28 @@ class _ChatDetailPageState extends State<ChatDetailPage>
                 },
               ),
               Expanded(
-                child: StableMessagesList(
-                  stream: messagesStream,
-                  controller: scrollController,
-                  currentUid: currentUid,
-                  otherUid: widget.otherUid,
-                  onLongPressMessage: openMessageActions,
-                  onDoubleTapMessage: (messageId) => setReaction(messageId, '❤️'),
+                child: Column(
+                  children: [
+                    if (showInitialAdPreview && widget.initialAdPreview != null)
+                      TowAdPreviewComposeCard(
+                        ad: widget.initialAdPreview!,
+                        onClose: () {
+                          // Sadece üstteki ilan önizlemesini kapatır.
+                          // Kalıcı veri yazmaz, mesaj göndermez.
+                          setState(() => showInitialAdPreview = false);
+                        },
+                      ),
+                    Expanded(
+                      child: StableMessagesList(
+                        stream: messagesStream,
+                        controller: scrollController,
+                        currentUid: currentUid,
+                        otherUid: widget.otherUid,
+                        onLongPressMessage: openMessageActions,
+                        onDoubleTapMessage: (messageId) => setReaction(messageId, '❤️'),
+                      ),
+                    ),
+                  ],
                 ),
               ),
               if (emojiOpen)
@@ -2015,6 +2071,188 @@ class _ChatDetailPageState extends State<ChatDetailPage>
     );
   }
 }
+
+
+class TowAdPreviewComposeCard extends StatelessWidget {
+  final Map<String, dynamic> ad;
+  final VoidCallback? onClose;
+
+  const TowAdPreviewComposeCard({
+    super.key,
+    required this.ad,
+    this.onClose,
+  });
+
+  String clean(dynamic value, {String fallback = ''}) {
+    final text = (value ?? '').toString().trim();
+    if (text.isEmpty || text == 'null') return fallback;
+    return text;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = clean(
+      ad['title'],
+      fallback: clean(
+        ad['companyName'],
+        fallback: clean(ad['towAdTitle'], fallback: 'Çekici ilanı'),
+      ),
+    );
+
+    final imageUrl = clean(
+      ad['imageUrl'],
+      fallback: clean(
+        ad['image'],
+        fallback: clean(ad['towAdImage']),
+      ),
+    );
+
+    final price = clean(
+      ad['priceInfo'],
+      fallback: clean(ad['price'], fallback: 'Ücret bilgisi yok'),
+    );
+
+    final city = clean(ad['city']);
+    final district = clean(ad['district']);
+    final location = '$city ${district.isNotEmpty ? '/ $district' : ''}'.trim();
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(14, 4, 14, 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: Colors.black.withOpacity(0.12), width: 1.2),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: SizedBox(
+              width: 72,
+              height: 72,
+              child: imageUrl.isEmpty
+                  ? Container(
+                color: Colors.black.withOpacity(0.06),
+                child: const Icon(
+                  Icons.fire_truck_rounded,
+                  color: Colors.black,
+                  size: 34,
+                ),
+              )
+                  : Image.network(
+                imageUrl,
+                fit: BoxFit.cover,
+                filterQuality: FilterQuality.medium,
+                errorBuilder: (_, __, ___) => Container(
+                  color: Colors.black.withOpacity(0.06),
+                  child: const Icon(
+                    Icons.fire_truck_rounded,
+                    color: Colors.black,
+                    size: 34,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'İlan önizlemesi',
+                  textScaler: TextScaler.noScaling,
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    color: Colors.black45,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  title,
+                  textScaler: TextScaler.noScaling,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontFamily: 'Roboto',
+                    color: Colors.black,
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF11B85A),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        price,
+                        textScaler: TextScaler.noScaling,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontFamily: 'Roboto',
+                          color: Colors.white,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    if (location.isNotEmpty) ...[
+                      const SizedBox(width: 7),
+                      Expanded(
+                        child: Text(
+                          location,
+                          textScaler: TextScaler.noScaling,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontFamily: 'Roboto',
+                            color: Colors.black45,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Hazır mesaj aşağıda. Göndermek için butona bas.',
+                  textScaler: TextScaler.noScaling,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: 'Roboto',
+                    color: Colors.black38,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 
 class StableMessagesList extends StatefulWidget {
   final Stream<QuerySnapshot<Map<String, dynamic>>> stream;
@@ -2369,6 +2607,10 @@ class MessageBubble extends StatelessWidget {
       return _buildPostMessage(context, reaction, text);
     }
 
+    if (type == 'tow_ad_text' || type == 'tow_ad' || message['adContext'] != null || (message['towAdId'] ?? '').toString().trim().isNotEmpty) {
+      return _buildTowAdMessage(context, reaction, text);
+    }
+
     if (type == 'image') {
       final imageUrl = (message['imageUrl'] ?? message['url'] ?? '').toString().trim();
 
@@ -2604,6 +2846,59 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
+
+  Map<String, dynamic> _messageAdContext() {
+    final raw = message['adContext'];
+    if (raw is Map) {
+      return Map<String, dynamic>.from(raw);
+    }
+
+    return {
+      'adId': message['adId'] ?? message['towAdId'] ?? '',
+      'towAdId': message['towAdId'] ?? message['adId'] ?? '',
+      'title': message['towAdTitle'] ?? message['adTitle'] ?? '',
+      'companyName': message['towAdTitle'] ?? message['adTitle'] ?? '',
+      'imageUrl': message['towAdImage'] ?? message['adImage'] ?? '',
+      'priceInfo': message['priceInfo'] ?? message['adPrice'] ?? '',
+      'city': message['city'] ?? message['adCity'] ?? '',
+      'district': message['district'] ?? message['adDistrict'] ?? '',
+      'status': message['status'] ?? '',
+    };
+  }
+
+  Widget _buildTowAdMessage(BuildContext context, String reaction, String text) {
+    final ad = _messageAdContext();
+
+    return _messageShell(
+      context: context,
+      reaction: reaction,
+      timeText: _bubbleTime(message['createdAt'] ?? message['time'] ?? message['sentAt']),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          LiveTowAdMessageCard(
+            ad: ad,
+            fromMe: fromMe,
+          ),
+          if (text.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(
+              text,
+              textScaler: TextScaler.noScaling,
+              style: TextStyle(
+                fontFamily: 'Roboto',
+                color: fromMe ? Colors.black : Colors.white,
+                fontWeight: FontWeight.w800,
+                height: 1.34,
+                fontSize: 14,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildPostMessage(BuildContext context, String reaction, String text) {
     final postImage = (message['postImage'] ?? '').toString().trim();
     final postUsername = (message['postUsername'] ?? 'nova.user').toString().trim();
@@ -2722,6 +3017,650 @@ class MessageBubble extends StatelessWidget {
     );
   }
 }
+
+
+class LiveTowAdMessageCard extends StatelessWidget {
+  final Map<String, dynamic> ad;
+  final bool fromMe;
+
+  const LiveTowAdMessageCard({
+    super.key,
+    required this.ad,
+    required this.fromMe,
+  });
+
+  String clean(dynamic value, {String fallback = ''}) {
+    final text = (value ?? '').toString().trim();
+    if (text.isEmpty || text == 'null') return fallback;
+    return text;
+  }
+
+  String get adId {
+    return clean(
+      ad['towAdId'],
+      fallback: clean(
+        ad['adId'],
+        fallback: clean(ad['id']),
+      ),
+    );
+  }
+
+  Map<String, dynamic> mergeAd(Map<String, dynamic> live) {
+    final merged = Map<String, dynamic>.from(ad);
+    for (final entry in live.entries) {
+      final value = entry.value;
+      if (value == null) continue;
+      final text = value.toString().trim();
+      if (text.isEmpty || text == 'null') continue;
+      merged[entry.key] = value;
+    }
+    return merged;
+  }
+
+  bool isPassive(Map<String, dynamic> data, {required bool exists}) {
+    final status = clean(data['status'], fallback: exists ? 'active' : 'deleted').toLowerCase();
+    final deleted = data['deleted'] == true || data['isDeleted'] == true;
+    return !exists || deleted || status == 'deleted' || status == 'passive' || status == 'inactive';
+  }
+
+  Future<void> askOpenAd(BuildContext context, Map<String, dynamic> data, bool passive) async {
+    if (passive) {
+      await showDialog<void>(
+        context: context,
+        builder: (_) => AlertDialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+          title: const Text(
+            'İlan yayında değil',
+            textScaler: TextScaler.noScaling,
+            style: TextStyle(fontFamily: 'Roboto', fontWeight: FontWeight.w900),
+          ),
+          content: const Text(
+            'Bu ilan silinmiş veya pasif duruma alınmış. Sohbet kalır ama ilan artık açılamaz.',
+            textScaler: TextScaler.noScaling,
+            style: TextStyle(fontFamily: 'Roboto', fontWeight: FontWeight.w700, height: 1.35),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text(
+                'Tamam',
+                textScaler: TextScaler.noScaling,
+                style: TextStyle(fontFamily: 'Roboto', fontWeight: FontWeight.w900),
+              ),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    final title = clean(
+      data['companyName'],
+      fallback: clean(
+        data['title'],
+        fallback: clean(data['towAdTitle'], fallback: 'Çekici ilanı'),
+      ),
+    );
+
+    final open = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.35),
+      builder: (_) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        title: const Text(
+          'İlan açılsın mı?',
+          textScaler: TextScaler.noScaling,
+          style: TextStyle(fontFamily: 'Roboto', fontWeight: FontWeight.w900),
+        ),
+        content: Text(
+          '$title ilanını tüm detaylarıyla açmak istiyor musun?',
+          textScaler: TextScaler.noScaling,
+          style: const TextStyle(fontFamily: 'Roboto', fontWeight: FontWeight.w700, height: 1.35),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text(
+              'Açılmasın',
+              textScaler: TextScaler.noScaling,
+              style: TextStyle(fontFamily: 'Roboto', color: Colors.red, fontWeight: FontWeight.w900),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.black,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            ),
+            child: const Text(
+              'Açılsın',
+              textScaler: TextScaler.noScaling,
+              style: TextStyle(fontFamily: 'Roboto', fontWeight: FontWeight.w900),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (open != true || !context.mounted) return;
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => TowAdDmFullDetailPage(
+          adId: adId,
+          fallbackAd: data,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final id = adId;
+
+    if (id.isEmpty) {
+      return _buildCard(context, ad, passive: false);
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance.collection('towAds').doc(id).snapshots(),
+      builder: (context, snapshot) {
+        final exists = snapshot.data?.exists == true;
+        final liveData = exists ? (snapshot.data?.data() ?? <String, dynamic>{}) : <String, dynamic>{};
+        final merged = mergeAd(liveData);
+        final passive = isPassive(merged, exists: exists);
+
+        return _buildCard(context, merged, passive: passive);
+      },
+    );
+  }
+
+  Widget _buildCard(BuildContext context, Map<String, dynamic> data, {required bool passive}) {
+    final title = clean(
+      data['companyName'],
+      fallback: clean(
+        data['title'],
+        fallback: clean(data['towAdTitle'], fallback: 'Çekici ilanı'),
+      ),
+    );
+
+    final imageUrl = clean(
+      data['imageUrl'],
+      fallback: clean(
+        data['image'],
+        fallback: clean(
+          data['coverImage'],
+          fallback: clean(data['towAdImage']),
+        ),
+      ),
+    );
+
+    final price = clean(
+      data['priceInfo'],
+      fallback: clean(data['price'], fallback: 'Ücret bilgisi yok'),
+    );
+
+    final city = clean(data['city']);
+    final district = clean(data['district']);
+    final location = '$city ${district.isNotEmpty ? '/ $district' : ''}'.trim();
+
+    final bgColor = fromMe ? const Color(0xFFF3F3F3) : Colors.white.withOpacity(0.10);
+    final textColor = fromMe ? Colors.black : Colors.white;
+    final subColor = fromMe ? Colors.black54 : Colors.white70;
+
+    return GestureDetector(
+      onTap: () => askOpenAd(context, data, passive),
+      child: Opacity(
+        opacity: passive ? 0.62 : 1,
+        child: Container(
+          width: 236,
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: bgColor,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: passive
+                  ? Colors.red.withOpacity(0.45)
+                  : (fromMe ? Colors.black.withOpacity(0.08) : Colors.white.withOpacity(0.16)),
+              width: 1.1,
+            ),
+          ),
+          child: Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: SizedBox(
+                  width: 62,
+                  height: 62,
+                  child: imageUrl.isEmpty
+                      ? Container(
+                    color: fromMe ? Colors.black.withOpacity(0.06) : Colors.white.withOpacity(0.08),
+                    child: Icon(Icons.fire_truck_rounded, color: subColor, size: 30),
+                  )
+                      : Image.network(
+                    imageUrl,
+                    fit: BoxFit.cover,
+                    filterQuality: FilterQuality.medium,
+                    errorBuilder: (_, __, ___) => Container(
+                      color: fromMe ? Colors.black.withOpacity(0.06) : Colors.white.withOpacity(0.08),
+                      child: Icon(Icons.fire_truck_rounded, color: subColor, size: 30),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      passive ? 'Bu ilan artık yayında değil' : 'İlan önizlemesi',
+                      textScaler: TextScaler.noScaling,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        color: passive ? Colors.red : subColor,
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      title,
+                      textScaler: TextScaler.noScaling,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        color: textColor,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      price,
+                      textScaler: TextScaler.noScaling,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        color: passive ? Colors.red : const Color(0xFF11B85A),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    if (location.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        location,
+                        textScaler: TextScaler.noScaling,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontFamily: 'Roboto',
+                          color: subColor,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 3),
+                    Text(
+                      passive ? 'Açılamaz' : 'Detay için dokun',
+                      textScaler: TextScaler.noScaling,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontFamily: 'Roboto',
+                        color: passive ? Colors.red : subColor,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class TowAdDmFullDetailPage extends StatelessWidget {
+  final String adId;
+  final Map<String, dynamic> fallbackAd;
+
+  const TowAdDmFullDetailPage({
+    super.key,
+    required this.adId,
+    required this.fallbackAd,
+  });
+
+  String clean(dynamic value, {String fallback = ''}) {
+    final text = (value ?? '').toString().trim();
+    if (text.isEmpty || text == 'null') return fallback;
+    return text;
+  }
+
+  Map<String, dynamic> merge(Map<String, dynamic> live) {
+    final merged = Map<String, dynamic>.from(fallbackAd);
+    for (final entry in live.entries) {
+      final value = entry.value;
+      if (value == null) continue;
+      final text = value.toString().trim();
+      if (text.isEmpty || text == 'null') continue;
+      merged[entry.key] = value;
+    }
+    return merged;
+  }
+
+  List<String> stringList(dynamic value) {
+    if (value is List) {
+      return value.map((e) => e.toString().trim()).where((e) => e.isNotEmpty && e != 'null').toList();
+    }
+    final text = clean(value);
+    if (text.isEmpty) return const [];
+    return text.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+  }
+
+  bool passive(Map<String, dynamic> data, {required bool exists}) {
+    final status = clean(data['status'], fallback: exists ? 'active' : 'deleted').toLowerCase();
+    final deleted = data['deleted'] == true || data['isDeleted'] == true;
+    return !exists || deleted || status == 'deleted' || status == 'passive' || status == 'inactive';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: adId.trim().isEmpty
+          ? null
+          : FirebaseFirestore.instance.collection('towAds').doc(adId).snapshots(),
+      builder: (context, snapshot) {
+        final exists = adId.trim().isEmpty ? true : snapshot.data?.exists == true;
+        final live = exists ? (snapshot.data?.data() ?? <String, dynamic>{}) : <String, dynamic>{};
+        final data = merge(live);
+        final isPassive = passive(data, exists: exists);
+
+        final title = clean(data['companyName'], fallback: clean(data['title'], fallback: 'Çekici ilanı'));
+        final description = clean(data['description'], fallback: 'Açıklama bulunamadı.');
+        final imageUrl = clean(data['imageUrl'], fallback: clean(data['image'], fallback: clean(data['coverImage'], fallback: clean(data['towAdImage']))));
+        final price = clean(data['priceInfo'], fallback: clean(data['price'], fallback: 'Ücret bilgisi yok'));
+        final phone = clean(data['phone'], fallback: clean(data['phoneNumber'], fallback: clean(data['telefon'])));
+        final city = clean(data['city']);
+        final district = clean(data['district']);
+        final ownerName = clean(data['ownerName'], fallback: clean(data['userName'], fallback: clean(data['username'], fallback: 'NOVA kullanıcısı')));
+        final username = clean(data['username'], fallback: clean(data['ownerUsername']));
+        final services = stringList(data['services']);
+        final likes = clean(data['likes'], fallback: '0');
+        final dislikes = clean(data['dislikes'], fallback: '0');
+        final commentCount = clean(data['commentCount'], fallback: clean(data['commentsCount'], fallback: '0'));
+        final ratingTotal = data['ratingTotal'];
+        final commentsNum = num.tryParse(commentCount) ?? 0;
+        final rating = ratingTotal is num && commentsNum > 0 ? (ratingTotal / commentsNum).toStringAsFixed(1) : clean(data['rating'], fallback: '0.0');
+
+        return MediaQuery(
+          data: MediaQuery.of(context).copyWith(textScaler: const TextScaler.linear(1.0)),
+          child: Scaffold(
+            backgroundColor: Colors.white,
+            body: SafeArea(
+              bottom: false,
+              child: CustomScrollView(
+                physics: const BouncingScrollPhysics(),
+                slivers: [
+                  SliverAppBar(
+                    pinned: true,
+                    backgroundColor: Colors.white,
+                    surfaceTintColor: Colors.white,
+                    foregroundColor: Colors.black,
+                    elevation: 0,
+                    centerTitle: true,
+                    title: const Text(
+                      'Çekici İlanı',
+                      textScaler: TextScaler.noScaling,
+                      style: TextStyle(fontFamily: 'Roboto', fontWeight: FontWeight.w900),
+                    ),
+                    leading: IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ),
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(14, 8, 14, MediaQuery.of(context).viewPadding.bottom + 28),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(24),
+                            child: AspectRatio(
+                              aspectRatio: 1,
+                              child: imageUrl.isEmpty
+                                  ? Container(
+                                color: Colors.black.withOpacity(0.06),
+                                child: const Icon(Icons.fire_truck_rounded, color: Colors.black, size: 74),
+                              )
+                                  : Image.network(
+                                imageUrl,
+                                fit: BoxFit.cover,
+                                filterQuality: FilterQuality.medium,
+                                errorBuilder: (_, __, ___) => Container(
+                                  color: Colors.black.withOpacity(0.06),
+                                  child: const Icon(Icons.fire_truck_rounded, color: Colors.black, size: 74),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          if (isPassive)
+                            Container(
+                              width: double.infinity,
+                              margin: const EdgeInsets.only(bottom: 12),
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.red.withOpacity(0.08),
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(color: Colors.red.withOpacity(0.25)),
+                              ),
+                              child: const Text(
+                                'Bu ilan artık yayında değil.',
+                                textScaler: TextScaler.noScaling,
+                                style: TextStyle(fontFamily: 'Roboto', color: Colors.red, fontWeight: FontWeight.w900),
+                              ),
+                            ),
+                          Text(
+                            title,
+                            textScaler: TextScaler.noScaling,
+                            style: const TextStyle(fontFamily: 'Roboto', color: Colors.black, fontSize: 25, fontWeight: FontWeight.w900),
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              const Icon(Icons.person_rounded, color: Colors.black45, size: 19),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  username.isEmpty ? ownerName : '$ownerName  @$username'.replaceAll('@@', '@'),
+                                  textScaler: TextScaler.noScaling,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontFamily: 'Roboto', color: Colors.black54, fontWeight: FontWeight.w900),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 14),
+                          Row(
+                            children: [
+                              Expanded(child: _TowDmInfoBox(icon: Icons.payments_rounded, title: 'Ücret', value: price, green: true)),
+                              const SizedBox(width: 10),
+                              Expanded(child: _TowDmInfoBox(icon: Icons.location_on_rounded, title: 'Konum', value: '$city ${district.isNotEmpty ? '/ $district' : ''}'.trim(), green: false)),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          _TowDmInfoBox(icon: Icons.call_rounded, title: 'Telefon', value: phone.isEmpty ? 'Telefon bilgisi yok' : phone, green: false),
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              Expanded(child: _TowDmInfoBox(icon: Icons.star_rounded, title: 'Puan', value: '$rating • $commentCount yorum', green: false)),
+                              const SizedBox(width: 10),
+                              Expanded(child: _TowDmInfoBox(icon: Icons.thumb_up_alt_rounded, title: 'Tepkiler', value: '$likes beğeni • $dislikes beğenmeme', green: false)),
+                            ],
+                          ),
+                          const SizedBox(height: 14),
+                          _TowDmSectionTitle('Açıklama'),
+                          const SizedBox(height: 8),
+                          _TowDmTextPanel(text: description),
+                          if (services.isNotEmpty) ...[
+                            const SizedBox(height: 18),
+                            _TowDmSectionTitle('Hizmetler'),
+                            const SizedBox(height: 10),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: services.map((service) => Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: Colors.black,
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  service,
+                                  textScaler: TextScaler.noScaling,
+                                  style: const TextStyle(fontFamily: 'Roboto', color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12),
+                                ),
+                              )).toList(),
+                            ),
+                          ],
+                          const SizedBox(height: 18),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: Colors.black,
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Text(
+                              'Bu ilan DM içinden canlı kontrol edilir. İlan sahibi düzenlerse bilgiler burada güncellenir; silinirse pasif görünür.',
+                              textScaler: TextScaler.noScaling,
+                              style: TextStyle(fontFamily: 'Roboto', color: Colors.white, fontWeight: FontWeight.w800, height: 1.35),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _TowDmInfoBox extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String value;
+  final bool green;
+
+  const _TowDmInfoBox({
+    required this.icon,
+    required this.title,
+    required this.value,
+    required this.green,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: green ? const Color(0xFF11B85A).withOpacity(0.10) : Colors.black.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: green ? const Color(0xFF11B85A).withOpacity(0.35) : Colors.black.withOpacity(0.08)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: green ? const Color(0xFF11B85A) : Colors.black, size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  textScaler: TextScaler.noScaling,
+                  style: const TextStyle(fontFamily: 'Roboto', color: Colors.black45, fontSize: 11, fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  value.isEmpty ? 'Bilgi yok' : value,
+                  textScaler: TextScaler.noScaling,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontFamily: 'Roboto', color: green ? const Color(0xFF11B85A) : Colors.black, fontSize: 13, fontWeight: FontWeight.w900, height: 1.25),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TowDmSectionTitle extends StatelessWidget {
+  final String text;
+
+  const _TowDmSectionTitle(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      textScaler: TextScaler.noScaling,
+      style: const TextStyle(fontFamily: 'Roboto', color: Colors.black, fontSize: 18, fontWeight: FontWeight.w900),
+    );
+  }
+}
+
+class _TowDmTextPanel extends StatelessWidget {
+  final String text;
+
+  const _TowDmTextPanel({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.black.withOpacity(0.08)),
+      ),
+      child: Text(
+        text,
+        textScaler: TextScaler.noScaling,
+        style: const TextStyle(fontFamily: 'Roboto', color: Colors.black87, fontWeight: FontWeight.w700, height: 1.38),
+      ),
+    );
+  }
+}
+
 
 class ReactionBadge extends StatelessWidget {
   final String reaction;
